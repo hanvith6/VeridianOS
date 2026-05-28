@@ -40,6 +40,10 @@ pub struct AgentRecord {
     pub intent: [u8; MAX_INTENT_LEN],
     pub pid: usize,
     pub valid: bool,
+    /// Phase 12: enclave_id is `Some(id)` when this agent runs inside a
+    /// hardware-isolated TEE enclave managed by the M-mode monitor.
+    /// `None` means the agent runs in ordinary S-mode kernel-managed memory.
+    pub enclave_id: Option<u8>,
 }
 
 pub struct AgentPool {
@@ -56,6 +60,7 @@ impl AgentPool {
             intent: [0; MAX_INTENT_LEN],
             pid: 0,
             valid: false,
+            enclave_id: None,
         };
         Self {
             records: [

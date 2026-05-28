@@ -72,6 +72,10 @@ pub fn syscall_handler(
         numbers::SYS_SGF_REPLICATE_QUERY => dist::syscalls::sys_sgf_replicate_query(arg0, arg1, arg2),
         numbers::SYS_SGF_RAFT_STATUS => dist::syscalls::sys_sgf_raft_status(arg0, arg1),
         numbers::SYS_REGISTER_EXCEPTION_HANDLER => sys_register_exception_handler(arg0),
+        numbers::SYS_ENCLAVE_CREATE  => crate::enclave::sys_enclave_create(arg0, arg1, arg2),
+        numbers::SYS_ENCLAVE_ENTER   => crate::enclave::sys_enclave_enter(arg0),
+        numbers::SYS_ENCLAVE_EXIT    => crate::enclave::sys_enclave_exit(arg0),
+        numbers::SYS_ENCLAVE_ATTEST  => crate::enclave::sys_enclave_attest(arg0, arg1),
         _ => {
             println!("[SYSCALL] Warning: Unknown system call ID: {}", id);
             -1 // ENOSYS: Function not implemented

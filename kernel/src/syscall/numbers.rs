@@ -187,4 +187,41 @@ pub const SYS_REGISTER_EXCEPTION_HANDLER: usize = 110;
 /// Syscall: Return from user-space exception handler.
 pub const SYS_EXCEPTION_RETURN: usize = 111;
 
+// -----------------------------------------------------------------------
+// Phase 12 — Hardware-Attested AI Agent Enclave Syscalls
+// -----------------------------------------------------------------------
+
+/// Syscall: Create a hardware TEE enclave via M-mode monitor.
+/// Registers:
+/// - `a7` = SYS_ENCLAVE_CREATE (120)
+/// - `a0` = phys_addr — physical base address of the enclave region (NAPOT-aligned)
+/// - `a1` = size — region size in bytes (power of two, >= 8)
+/// - `a2` = entry_pa — physical entry point address within the region
+/// Returns: enclave_id (u8) on success, negative SBI error code on failure.
+pub const SYS_ENCLAVE_CREATE: usize = 120;
+
+/// Syscall: Enter a hardware TEE enclave (CPU drops to U-mode in PMP-locked region).
+/// Registers:
+/// - `a7` = SYS_ENCLAVE_ENTER (121)
+/// - `a0` = enclave_id
+/// Returns: 0 on success (after enclave exits), negative error on failure.
+/// Note: This syscall returns only after the enclave calls SYS_ENCLAVE_EXIT.
+pub const SYS_ENCLAVE_ENTER: usize = 121;
+
+/// Syscall: Exit the current enclave and return to S-mode kernel.
+/// Issued from inside the enclave (U-mode).
+/// Registers:
+/// - `a7` = SYS_ENCLAVE_EXIT (122)
+/// - `a0` = enclave_id
+/// Returns: 0 on success (control returns to the kernel's SYS_ENCLAVE_ENTER call site).
+pub const SYS_ENCLAVE_EXIT: usize = 122;
+
+/// Syscall: Request an attestation report from the M-mode monitor.
+/// Registers:
+/// - `a7` = SYS_ENCLAVE_ATTEST (123)
+/// - `a0` = enclave_id
+/// - `a1` = report_buf_ptr — user-space pointer to 73-byte output buffer
+/// Returns: 0 on success, negative error on failure.
+/// The 73-byte report layout: [enclave_id(1) | phys_start(8) | size(8) | sha256(32) | hmac(24)]
+pub const SYS_ENCLAVE_ATTEST: usize = 123;
 

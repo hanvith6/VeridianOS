@@ -86,3 +86,7 @@ dependencies = [
  "linked_list_allocator",
  "spin",
 ]
+
+[[package]]
+name = "veridian-monitor"
+version = "0.1.0"

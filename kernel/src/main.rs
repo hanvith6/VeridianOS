@@ -40,6 +40,7 @@ pub mod virtio;
 pub mod semantic_graph;
 pub mod agent;
 pub mod dist;
+pub mod enclave;
 
 
 

@@ -124,7 +124,9 @@ pub static mut ENCLAVE_POOL: [Enclave; MAX_ENCLAVES] = [
 ///
 /// Must be called exactly once before any SBI enclave calls arrive.
 pub unsafe fn init_pool() {
-    for slot in ENCLAVE_POOL.iter_mut() {
+    let pool: *mut [Enclave; MAX_ENCLAVES] = core::ptr::addr_of_mut!(ENCLAVE_POOL);
+    for i in 0..MAX_ENCLAVES {
+        let slot = &mut (*pool)[i];
         slot.state = EnclaveState::Empty;
         slot.allocated = false;
         slot.phys_start = 0;
@@ -185,8 +187,16 @@ pub unsafe fn enclave_create(
 
     // --- Find a free slot ---
 
-    let slot = ENCLAVE_POOL.iter_mut().find(|e| !e.allocated)
-        .ok_or(SBI_ERR_FAILED)?;
+    let pool: *mut [Enclave; MAX_ENCLAVES] = core::ptr::addr_of_mut!(ENCLAVE_POOL);
+    let mut found_idx = None;
+    for i in 0..MAX_ENCLAVES {
+        if !(*pool)[i].allocated {
+            found_idx = Some(i);
+            break;
+        }
+    }
+    let slot_idx = found_idx.ok_or(SBI_ERR_FAILED)?;
+    let slot = &mut (*pool)[slot_idx];
 
     let pmp_slot = slot.pmp_slot;
 
@@ -361,9 +371,23 @@ pub unsafe fn enclave_attest(enclave_id: u8, report_phys: usize) -> Result<(), i
 // -----------------------------------------------------------------------
 
 unsafe fn find_slot(id: u8) -> Option<&'static Enclave> {
-    ENCLAVE_POOL.iter().find(|e| e.allocated && e.id == id)
+    let pool: *const [Enclave; MAX_ENCLAVES] = core::ptr::addr_of!(ENCLAVE_POOL);
+    for i in 0..MAX_ENCLAVES {
+        let e = &(*pool)[i];
+        if e.allocated && e.id == id {
+            return Some(e);
+        }
+    }
+    None
 }
 
 unsafe fn find_slot_mut(id: u8) -> Option<&'static mut Enclave> {
-    ENCLAVE_POOL.iter_mut().find(|e| e.allocated && e.id == id)
+    let pool: *mut [Enclave; MAX_ENCLAVES] = core::ptr::addr_of_mut!(ENCLAVE_POOL);
+    for i in 0..MAX_ENCLAVES {
+        let e = &mut (*pool)[i];
+        if e.allocated && e.id == id {
+            return Some(e);
+        }
+    }
+    None
 }
