@@ -102,7 +102,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ```bash
 # Clone the repository
-git clone https://github.com/hanvith/VeridianOS.git
+git clone https://github.com/hanvith6/VeridianOS.git
 cd VeridianOS
 
 # Build everything (user-space binaries & kernel image) and boot in QEMU

@@ -98,7 +98,7 @@ qemu-system-riscv64 --version
 ### Step 3 — Clone & Verify
 
 ```bash
-git clone https://github.com/hanvith/VeridianOS.git
+git clone https://github.com/hanvith6/VeridianOS.git
 cd VeridianOS
 
 # Verify the toolchain resolves correctly
@@ -284,7 +284,7 @@ sret → resume U-mode
 ### Directory Structure
 
 ```
-OS/
+VeridianOS/
 ├── Cargo.toml              ← Workspace: [kernel, hello, neural_test, user_program]
 ├── Makefile                ← Build targets (build/run/disk/debug/clean)
 ├── rust-toolchain.toml     ← Pins nightly + riscv64gc-unknown-none-elf
