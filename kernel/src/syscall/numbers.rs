@@ -33,6 +33,21 @@ pub const SYS_HANDLE_CLOSE: usize = 3;
 /// - `a1` = rights bitmask to apply (0 to keep same)
 pub const SYS_HANDLE_DUPLICATE: usize = 4;
 
+/// Syscall: Spawn a new process from a RAMFS binary name.
+pub const SYS_SPAWN: usize = 5;
+
+/// Syscall: Yield CPU time to next ready thread.
+pub const SYS_YIELD: usize = 6;
+
+/// Syscall: Wait for a thread to exit.
+pub const SYS_WAIT: usize = 7;
+
+/// Syscall: Map memory dynamically.
+pub const SYS_MAP: usize = 8;
+
+/// Syscall: Unmap memory dynamically.
+pub const SYS_UNMAP: usize = 9;
+
 /// Syscall: Create a new task graph.
 /// Registers:
 /// - `a7` = SYS_GRAPH_CREATE (50)
@@ -73,6 +88,9 @@ pub const SYS_NODE_WRITE: usize = 62;
 
 /// Syscall: Query matching nodes in the semantic graph.
 pub const SYS_GRAPH_QUERY: usize = 63;
+
+/// Syscall: Delete a semantic graph node and reclaim its VMO memory.
+pub const SYS_NODE_DELETE: usize = 64;
 
 // -----------------------------------------------------------------------
 // Phase 9 — Agent Runtime Syscalls

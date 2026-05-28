@@ -253,3 +253,103 @@ pub fn sys_graph_query(predicate_ptr: usize, out_buf_ptr: usize, max_results: us
 
     count as isize
 }
+
+/// Delete a semantic graph node and reclaim its VMO memory (SYS_NODE_DELETE = 64)
+pub fn sys_node_delete(node_handle: usize) -> isize {
+    let res = crate::process::with_current_process(|proc| {
+        // 1. Retrieve the GraphNode handle to verify it exists and has WRITE rights.
+        let handle = match proc.handle_table.get(node_handle) {
+            Ok(h) => h,
+            Err(_) => return Err(-9), // -EBADF: Bad file descriptor/handle
+        };
+
+        if handle.object_type != ObjectType::GraphNode {
+            return Err(-9); // -EBADF
+        }
+
+        if !handle.rights.contains(Rights::WRITE) {
+            return Err(-13); // -EACCES: Permission denied
+        }
+
+        let node_id = handle.object_ptr as u64;
+
+        // 2. Fetch VMO details from store
+        let (vmo_handle_id, blob_size) = match super::store::with_node(node_id, |node| {
+            (node.vmo_handle, node.blob_size)
+        }) {
+            Some(val) => val,
+            None => return Err(-9), // -EBADF
+        };
+
+        // 3. If there is an associated VMO, unmap its pages and free physical frames
+        if vmo_handle_id > 0 && blob_size > 0 {
+            let vmo_handle = match proc.handle_table.get(vmo_handle_id) {
+                Ok(h) => h,
+                Err(_) => return Err(-9), // -EBADF
+            };
+            if vmo_handle.object_type != ObjectType::VirtualMemoryObject {
+                return Err(-9); // -EBADF
+            }
+            let virt_base = vmo_handle.object_ptr;
+            let num_pages = blob_size.div_ceil(PAGE_SIZE);
+
+            for page_idx in 0..num_pages {
+                let va = virt_base + page_idx * PAGE_SIZE;
+                if let Some(entry) = proc.page_table.get_entry_mut(va) {
+                    if entry.is_valid() {
+                        let paddr = entry.physical_address();
+                        entry.clear();
+                        unsafe { crate::memory::free_page(paddr); }
+                    }
+                }
+            }
+            // Remove VMO handle from process table
+            let _ = proc.handle_table.remove(vmo_handle_id);
+
+            // Flush TLB
+            unsafe {
+                core::arch::asm!("sfence.vma");
+            }
+        }
+
+        // 4. Remove GraphNode handle from process table
+        let _ = proc.handle_table.remove(node_handle);
+
+        // 5. Mark node in GraphStore as unallocated
+        let mut store = super::store::GRAPH_STORE.lock();
+        for slot in store.nodes.iter_mut() {
+            if slot.allocated && slot.id == node_id {
+                slot.allocated = false;
+                slot.id = super::types::OBJECT_ID_NULL;
+                slot.vmo_handle = 0;
+                slot.blob_size = 0;
+                slot.ref_count = 0;
+                slot.owner_pid = 0;
+                break;
+            }
+        }
+
+        // 6. Clean up references pointing to this node in other nodes' edge lists
+        for slot in store.nodes.iter_mut() {
+            if slot.allocated {
+                let mut write_idx = 0;
+                let count = slot.edges.count;
+                for i in 0..count {
+                    if slot.edges.store[i].target != node_id {
+                        slot.edges.store[write_idx] = slot.edges.store[i];
+                        write_idx += 1;
+                    }
+                }
+                slot.edges.count = write_idx;
+            }
+        }
+
+        Ok(0)
+    });
+
+    match res {
+        Some(Ok(val)) => val,
+        Some(Err(err)) => err,
+        None => -3, // -EPERM
+    }
+}

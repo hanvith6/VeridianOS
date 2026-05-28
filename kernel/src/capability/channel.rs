@@ -14,7 +14,7 @@ use crate::capability::Handle;
 use spin::Mutex;
 
 /// The maximum byte length of a single channel message.
-pub const MAX_MESSAGE_SIZE: usize = 128;
+pub const MAX_MESSAGE_SIZE: usize = 512;
 
 /// A single message queued inside a channel.
 #[derive(Clone, Copy)]
@@ -40,6 +40,7 @@ pub struct Channel {
     write_idx: usize,
     read_idx: usize,
     count: usize,
+    pub blocked_tid: Option<usize>,
 }
 
 impl Default for Channel {
@@ -55,6 +56,7 @@ impl Channel {
             write_idx: 0,
             read_idx: 0,
             count: 0,
+            blocked_tid: None,
         }
     }
 
@@ -74,6 +76,13 @@ impl Channel {
 
         self.write_idx = (self.write_idx + 1) % 8;
         self.count += 1;
+
+        // Wake up a blocked reader thread if any
+        if let Some(tid) = self.blocked_tid {
+            crate::process::thread::wakeup_thread(tid);
+            self.blocked_tid = None;
+        }
+
         Ok(())
     }
 
@@ -92,7 +101,7 @@ impl Channel {
 
 /// A static pool of channels in kernel memory.
 /// This avoids the need for dynamic kernel heap allocation.
-pub static CHANNELS: Mutex<[Option<Channel>; 16]> = Mutex::new([const { None }; 16]);
+pub static CHANNELS: Mutex<[Option<Channel>; 64]> = Mutex::new([const { None }; 64]);
 
 /// Create a new channel in the global pool.
 /// Returns the index of the allocated channel.

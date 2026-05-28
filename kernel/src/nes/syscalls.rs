@@ -436,29 +436,64 @@ pub fn sys_graph_wait(graph_handle: usize, timeout_us: usize) -> isize {
         (timeout_us as u64) * 10
     };
 
+    let mut spin_count = 0;
+    let mut sie = 0;
     loop {
-        let pool = GRAPH_POOL.lock();
+        let mut pool = GRAPH_POOL.lock();
         if graph_id > 0 && graph_id <= pool.len() && pool[graph_id - 1].allocated {
-            let g = &pool[graph_id - 1];
+            let g = &mut pool[graph_id - 1];
             let all_completed = g.nodes.iter().take(g.num_nodes).all(|n| n.state == NodeState::Completed);
             if all_completed {
+                if sie != 0 {
+                    unsafe { core::arch::asm!("csrs sstatus, {}", in(reg) 2usize); }
+                }
                 return 0; // Success
             }
             // Check for failures
             for n in g.nodes.iter().take(g.num_nodes) {
                 if let NodeState::Failed(err) = n.state {
+                    if sie != 0 {
+                        unsafe { core::arch::asm!("csrs sstatus, {}", in(reg) 2usize); }
+                    }
                     return err;
                 }
             }
+
+            if spin_count > 20 {
+                let tid = crate::process::thread::current_tid();
+                g.blocked_tid = Some(tid);
+                
+                // Disable supervisor interrupts during state transition to avoid lost wakeup race
+                sie = unsafe {
+                    let mut sstatus: usize;
+                    core::arch::asm!("csrr {}, sstatus", out(reg) sstatus);
+                    core::arch::asm!("csrc sstatus, {}", in(reg) 2usize);
+                    sstatus & 2
+                };
+                
+                drop(pool);
+
+                crate::process::thread::block_current_thread();
+                
+                spin_count = 0;
+                continue;
+            }
         } else {
+            if sie != 0 {
+                unsafe { core::arch::asm!("csrs sstatus, {}", in(reg) 2usize); }
+            }
             return -9; // -EBADF
         }
         drop(pool);
 
         if timeout_us != usize::MAX && (read_time() - start_time) >= timeout_ticks {
+            if sie != 0 {
+                unsafe { core::arch::asm!("csrs sstatus, {}", in(reg) 2usize); }
+            }
             return -110; // -ETIMEDOUT
         }
 
+        spin_count += 1;
         crate::process::thread::schedule();
     }
 }

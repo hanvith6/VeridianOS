@@ -45,7 +45,7 @@ pub struct Thread {
     pub pid: usize,
     pub state: ThreadState,
     pub context: ThreadContext,
-    pub stack: Stack,
+    pub stack: Option<alloc::boxed::Box<Stack>>,
     pub satp: usize,
     pub user_entry: Option<usize>,
     pub user_sp: Option<usize>,
@@ -59,7 +59,7 @@ impl Thread {
             pid,
             state: ThreadState::Ready,
             context: ThreadContext::default(),
-            stack: Stack([0; 16384]),
+            stack: Some(alloc::boxed::Box::new(Stack([0; 16384]))),
             satp,
             user_entry: None,
             user_sp: None,
@@ -70,14 +70,16 @@ impl Thread {
     ///
     /// This must be called *after* the Thread struct is in its final static memory location.
     pub fn init_context(&mut self, entry: fn() -> !) {
-        let stack_top = &self.stack as *const Stack as usize + 16384;
-        assert!(
-            stack_top.is_multiple_of(16),
-            "Stack top must be 16-byte aligned"
-        );
+        if let Some(ref mut stack) = self.stack {
+            let stack_top = &**stack as *const Stack as usize + 16384;
+            assert!(
+                stack_top.is_multiple_of(16),
+                "Stack top must be 16-byte aligned"
+            );
 
-        self.context.sp = stack_top;
-        self.context.ra = entry as usize;
+            self.context.sp = stack_top;
+            self.context.ra = entry as usize;
+        }
     }
 }
 
@@ -197,7 +199,7 @@ pub fn spawn_thread_with_satp(entry: fn() -> !, satp: usize) -> Result<usize, &'
 
 fn user_mode_trampoline() -> ! {
     unsafe {
-        release_lock();
+        SCHEDULER.force_unlock();
     }
 
     let (entry, user_sp) = {
@@ -290,6 +292,18 @@ pub fn current_pid() -> usize {
     }
 }
 
+/// Check if a thread exists and if it has exited.
+/// Returns (found, exited).
+pub fn check_thread_status(tid: usize) -> (bool, bool) {
+    let sched = SCHEDULER.lock();
+    for t in sched.threads.iter().flatten() {
+        if t.tid == tid {
+            return (true, t.state == ThreadState::Exited);
+        }
+    }
+    (false, false)
+}
+
 /// Initialize the scheduler with the main thread.
 pub fn init() {
     let mut sched = SCHEDULER.lock();
@@ -303,7 +317,7 @@ pub fn init() {
         pid: 1, // boot thread runs the root process (PID 1)
         state: ThreadState::Running,
         context: ThreadContext::default(),
-        stack: Stack([0; 16384]), // Dummy stack since we are already using the boot stack
+        stack: None, // Dummy stack since we are already using the boot stack
         satp: crate::memory::KERNEL_PAGE_TABLE.lock().satp(),
         user_entry: None,
         user_sp: None,

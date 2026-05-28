@@ -421,6 +421,9 @@ pub fn read_sector(lba: u64, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static
                 break;
             }
             spins += 1;
+            if spins % 10000 == 0 {
+                crate::process::thread::schedule();
+            }
             if spins > 50_000_000 {
                 let dev_status = mmio_read(base, VIRTIO_MMIO_STATUS);
                 let current_avail = core::ptr::read_volatile(core::ptr::addr_of!((*avail).idx));

@@ -233,6 +233,10 @@ pub fn complete_node(graph_id: usize, node_id: usize) {
         if all_completed {
             graph.active_execution = false;
             crate::println!("[NEURAL_SCHED] Graph {} execution finished. Waking up process PID {} blocked in sys_graph_wait.", graph.graph_id, graph.owner_pid);
+            if let Some(tid) = graph.blocked_tid {
+                crate::process::thread::wakeup_thread(tid);
+                graph.blocked_tid = None;
+            }
         }
     }
 }

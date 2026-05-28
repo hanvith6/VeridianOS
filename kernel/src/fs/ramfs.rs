@@ -86,7 +86,7 @@ struct FileEntry {
 /// The complete in-kernel RamFs state.
 struct RamFsState {
     /// Raw bytes loaded from the disk (up to RAMFS_BUF_SIZE)
-    buf: [u8; RAMFS_BUF_SIZE],
+    buf: Option<alloc::vec::Vec<u8>>,
     /// Number of bytes actually loaded from disk
     loaded_bytes: usize,
     /// Parsed file index
@@ -100,7 +100,7 @@ struct RamFsState {
 impl RamFsState {
     const fn new() -> Self {
         Self {
-            buf: [0u8; RAMFS_BUF_SIZE],
+            buf: None,
             loaded_bytes: 0,
             files: [None; MAX_FILES],
             file_count: 0,
@@ -175,19 +175,30 @@ impl RamFs {
             sectors_to_read / 2
         );
 
-        // Read sectors directly into the buffer
-        let buf_slice = &mut state.buf[..sectors_to_read * SECTOR_SIZE];
-        blk::read_sectors(0, sectors_to_read, buf_slice)?;
+        // Allocate the buffer dynamically from heap if not already allocated
+        if state.buf.is_none() {
+            state.buf = Some(alloc::vec![0u8; sectors_to_read * SECTOR_SIZE]);
+        }
+
+        {
+            let buf = state.buf.as_mut().unwrap();
+            // Read sectors directly into the buffer
+            let buf_slice = &mut buf[..sectors_to_read * SECTOR_SIZE];
+            blk::read_sectors(0, sectors_to_read, buf_slice)?;
+        }
         state.loaded_bytes = sectors_to_read * SECTOR_SIZE;
 
         // Parse the ustar TAR archive
         let mut offset = 0usize;
         let mut file_count = 0;
 
-        while offset + 512 <= state.loaded_bytes {
+        let buf_ptr = state.buf.as_ref().unwrap().as_ptr();
+        let loaded_bytes = state.loaded_bytes;
+
+        while offset + 512 <= loaded_bytes {
             // Safety: buf is valid, offset is aligned to 512-byte blocks
             let header = unsafe {
-                &*(state.buf.as_ptr().add(offset) as *const UstarHeader)
+                &*(buf_ptr.add(offset) as *const UstarHeader)
             };
 
             // Check for end-of-archive marker (two all-zero blocks)
@@ -264,9 +275,11 @@ impl RamFs {
                     let start = entry.data_offset;
                     let end = start + entry.data_len;
                     if end <= state.loaded_bytes {
-                        // Safety: we return a pointer to static kernel memory
-                        let ptr = unsafe { state.buf.as_ptr().add(start) };
-                        return Some(unsafe { core::slice::from_raw_parts(ptr, entry.data_len) });
+                        if let Some(ref buf) = state.buf {
+                            // Safety: we return a pointer to static kernel memory
+                            let ptr = unsafe { buf.as_ptr().add(start) };
+                            return Some(unsafe { core::slice::from_raw_parts(ptr, entry.data_len) });
+                        }
                     }
                 }
         }

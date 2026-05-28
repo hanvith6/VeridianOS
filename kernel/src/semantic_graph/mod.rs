@@ -12,7 +12,7 @@ pub use types::{
     OBJECT_ID_NULL,
 };
 pub use store::{GRAPH_STORE, with_node, with_node_mut};
-pub use syscalls::{sys_node_create, sys_edge_add, sys_node_write, sys_graph_query};
+pub use syscalls::{sys_node_create, sys_edge_add, sys_node_write, sys_graph_query, sys_node_delete};
 
 /// Initialize the semantic graph database
 pub fn init() {

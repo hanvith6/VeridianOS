@@ -65,6 +65,7 @@ pub struct TaskGraph {
     pub validated: bool,
     pub active_execution: bool,
     pub allocated: bool,
+    pub blocked_tid: Option<usize>,
     
     pub num_nodes: usize,
     pub nodes: [TaskNode; MAX_NODES_PER_GRAPH],
@@ -86,6 +87,7 @@ impl TaskGraph {
             validated: false,
             active_execution: false,
             allocated: false,
+            blocked_tid: None,
             num_nodes: 0,
             nodes: [TaskNode::new_empty(); MAX_NODES_PER_GRAPH],
             node_successors: [[0; MAX_DEPENDENCIES]; MAX_NODES_PER_GRAPH],
@@ -102,6 +104,7 @@ impl TaskGraph {
             validated: false,
             active_execution: false,
             allocated: true,
+            blocked_tid: None,
             num_nodes: 0,
             nodes: [TaskNode::new_empty(); MAX_NODES_PER_GRAPH],
             node_successors: [[0; MAX_DEPENDENCIES]; MAX_NODES_PER_GRAPH],
@@ -118,6 +121,7 @@ impl TaskGraph {
         self.active_execution = false;
         self.num_nodes = 0;
         self.allocated = true;
+        self.blocked_tid = None;
         for val in self.successor_counts.iter_mut() {
             *val = 0;
         }

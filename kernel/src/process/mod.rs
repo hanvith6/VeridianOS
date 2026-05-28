@@ -52,6 +52,7 @@ pub struct Process {
     pub state: ProcessState,
     pub page_table: PageTable,
     pub handle_table: HandleTable,
+    pub next_stack_va: usize,
 }
 
 impl Process {
@@ -91,7 +92,54 @@ impl Process {
             state: ProcessState::Ready,
             page_table: pt,
             handle_table,
+            next_stack_va: 0x4000_0000,
         }
+    }
+
+    /// Allocate a user stack with ASLR and an unmapped guard page below it.
+    pub fn alloc_stack(&mut self) -> Result<(usize, usize), &'static str> {
+        if self.next_stack_va == 0 {
+            self.next_stack_va = 0x4000_0000;
+        }
+
+        // Apply ASLR on the first stack allocation
+        if self.next_stack_va == 0x4000_0000 {
+            let mut seed = crate::sbi::get_time() ^ (self.pid as u64);
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let aslr_pages = (seed as usize % 64) + 1; // 1 to 64 pages
+            self.next_stack_va += aslr_pages * PAGE_SIZE;
+        }
+
+        // 1-page unmapped guard page below the stack
+        let _guard_va = self.next_stack_va;
+        self.next_stack_va += PAGE_SIZE;
+
+        // Actual stack is the next page
+        let stack_va = self.next_stack_va;
+        self.next_stack_va += PAGE_SIZE;
+
+        let stack_top = stack_va + PAGE_SIZE;
+
+        // Allocate physical page frame
+        let stack_phys = alloc_page().ok_or("alloc_stack: out of physical memory")?;
+        
+        // Zero physical page to prevent information leaks
+        unsafe {
+            core::ptr::write_bytes(stack_phys as *mut u8, 0, PAGE_SIZE);
+        }
+
+        // Map physical page frame into process page table
+        unsafe {
+            self.page_table.map(
+                stack_va,
+                stack_phys,
+                PageTableFlags::READ | PageTableFlags::WRITE | PageTableFlags::USER,
+            )?;
+        }
+
+        Ok((stack_va, stack_top))
     }
 
     /// Validates that a user-supplied buffer `[virt_addr, virt_addr + len)` is entirely
@@ -154,19 +202,7 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
     let mut process = Process::new(pid);
 
     // 2. Allocate and map the user stack
-    //    Stack occupies one page at 0x4000_2000 → 0x4000_3000
-    //    The stack pointer starts at the top: 0x4000_3000
-    let stack_phys = alloc_page().ok_or("spawn: out of memory for user stack")?;
-    let user_stack_virt = 0x4000_2000usize;
-    let user_stack_top  = 0x4000_3000usize;
-
-    unsafe {
-        process.page_table.map(
-            user_stack_virt,
-            stack_phys,
-            PageTableFlags::READ | PageTableFlags::WRITE | PageTableFlags::USER,
-        )?;
-    }
+    let (user_stack_virt, user_stack_top) = process.alloc_stack()?;
 
     if name == "neural_test" || name == "policy_test" {
         // Insert DeviceQueue capability at handle 4
@@ -208,11 +244,6 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
                 }
             }
         }
-    }
-
-    // Zero out the stack page so there's no stale kernel data visible in U-mode
-    unsafe {
-        core::ptr::write_bytes(stack_phys as *mut u8, 0, PAGE_SIZE);
     }
 
     // 3. Load the ELF binary — maps all PT_LOAD segments into the process page table

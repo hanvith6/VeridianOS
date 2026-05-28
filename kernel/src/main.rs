@@ -237,30 +237,34 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
                 Ok(count) => {
                     println!("[RAMFS] Loaded {} file(s) from disk image.", count);
 
-                    // 7c. Look up the 'policy_test' ELF binary by name
-                    match fs::RamFs::find("policy_test") {
+                    // 7c. Parse the 'init' binary name from bootargs, fallback to "policy_test"
+                    let init_binary = parse_bootargs(dtb_ptr).unwrap_or("policy_test");
+                    println!("[RAMFS] Looking for init binary: '{}'", init_binary);
+                    match fs::RamFs::find(init_binary) {
                         Some(elf_data) => {
                             println!(
-                                "[RAMFS] Found 'policy_test' ({} bytes). Spawning process...",
+                                "[RAMFS] Found '{}' ({} bytes). Spawning process...",
+                                init_binary,
                                 elf_data.len()
                             );
 
                             // 7d. Spawn the process — creates isolated page table,
                             //     maps ELF segments, starts user-mode thread
-                            match process::spawn("policy_test", elf_data) {
+                            match process::spawn(init_binary, elf_data) {
                                 Ok(tid) => {
                                     println!(
-                                        "[BOOT] Process 'policy_test' scheduled as thread tid={}",
+                                        "[BOOT] Process '{}' scheduled as thread tid={}",
+                                        init_binary,
                                         tid
                                     );
                                 }
                                 Err(e) => {
-                                    println!("[ERROR] Failed to spawn 'policy_test': {}", e);
+                                    println!("[ERROR] Failed to spawn '{}': {}", init_binary, e);
                                 }
                             }
                         }
                         None => {
-                            println!("[RAMFS] WARNING: 'policy_test' binary not found in disk image.");
+                            println!("[RAMFS] WARNING: '{}' binary not found in disk image.", init_binary);
                             println!("[RAMFS] Run `make disk` to rebuild disk.img.");
                         }
                     }
@@ -308,4 +312,121 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
             core::arch::asm!("wfi");
         }
     }
+}
+
+#[repr(C)]
+struct FdtHeader {
+    magic: u32,
+    totalsize: u32,
+    off_dt_struct: u32,
+    off_dt_strings: u32,
+    off_mem_rsvmap: u32,
+    version: u32,
+    last_comp_version: u32,
+    boot_cpuid_phys: u32,
+    size_dt_strings: u32,
+    size_dt_struct: u32,
+}
+
+fn parse_bootargs(dtb_ptr: usize) -> Option<&'static str> {
+    if dtb_ptr == 0 {
+        return None;
+    }
+
+    let header = unsafe { &*(dtb_ptr as *const FdtHeader) };
+    let magic = u32::from_be(header.magic);
+    if magic != 0xd00dfeed {
+        return None;
+    }
+
+    let off_struct = u32::from_be(header.off_dt_struct) as usize;
+    let off_strings = u32::from_be(header.off_dt_strings) as usize;
+
+    let struct_ptr = (dtb_ptr + off_struct) as *const u32;
+    let strings_ptr = (dtb_ptr + off_strings) as *const u8;
+
+    let mut offset = 0;
+    let mut in_chosen = false;
+    let mut depth = 0;
+
+    for _ in 0..10000 {
+        let token = u32::from_be(unsafe { *struct_ptr.add(offset) });
+        offset += 1;
+
+        match token {
+            1 => { // FDT_BEGIN_NODE
+                let name_ptr = unsafe { struct_ptr.add(offset) as *const u8 };
+                let mut len = 0;
+                unsafe {
+                    while *name_ptr.add(len) != 0 {
+                        len += 1;
+                    }
+                }
+
+                let name_slice = unsafe { core::slice::from_raw_parts(name_ptr, len) };
+                if let Ok(name_str) = core::str::from_utf8(name_slice) {
+                    if name_str == "chosen" {
+                        in_chosen = true;
+                        depth = 1;
+                    } else if in_chosen {
+                        depth += 1;
+                    }
+                }
+
+                let name_bytes = len + 1;
+                let name_words = (name_bytes + 3) / 4;
+                offset += name_words;
+            }
+            2 => { // FDT_END_NODE
+                if in_chosen {
+                    depth -= 1;
+                    if depth == 0 {
+                        in_chosen = false;
+                    }
+                }
+            }
+            3 => { // FDT_PROP
+                let len = u32::from_be(unsafe { *struct_ptr.add(offset) }) as usize;
+                let nameoff = u32::from_be(unsafe { *struct_ptr.add(offset + 1) }) as usize;
+                offset += 2;
+
+                let prop_name_ptr = unsafe { strings_ptr.add(nameoff) };
+                let mut name_len = 0;
+                unsafe {
+                    while *prop_name_ptr.add(name_len) != 0 {
+                        name_len += 1;
+                    }
+                }
+                let prop_name_slice = unsafe { core::slice::from_raw_parts(prop_name_ptr, name_len) };
+
+                if let Ok(prop_name) = core::str::from_utf8(prop_name_slice) {
+                    if in_chosen && prop_name == "bootargs" {
+                        let val_ptr = unsafe { struct_ptr.add(offset) as *const u8 };
+                        let val_len = if len > 0 && unsafe { *val_ptr.add(len - 1) } == 0 {
+                            len - 1
+                        } else {
+                            len
+                        };
+                        let val_slice = unsafe { core::slice::from_raw_parts(val_ptr, val_len) };
+                        if let Ok(bootargs_str) = core::str::from_utf8(val_slice) {
+                            if let Some(init_start) = bootargs_str.find("init=") {
+                                let init_val = &bootargs_str[init_start + 5..];
+                                let init_end = init_val.find(' ').unwrap_or(init_val.len());
+                                let parsed = &init_val[..init_end];
+                                return Some(unsafe { core::mem::transmute::<&str, &'static str>(parsed) });
+                            }
+                        }
+                    }
+                }
+
+                let val_words = (len + 3) / 4;
+                offset += val_words;
+            }
+            4 => {} // FDT_NOP
+            9 => break, // FDT_END
+            _ => break,
+        }
+    }
+
+    None
 }
