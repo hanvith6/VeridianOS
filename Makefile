@@ -1,7 +1,7 @@
 # VeridianOS Makefile
 # Builds the kernel, user programs, and disk image, then runs under QEMU.
 
-.PHONY: all build disk run clean clippy fmt build_agent_test build_policy_test
+.PHONY: all build disk run clean clippy fmt build_agent_test build_policy_test build_smp_test
 
 DISK_IMG := disk.img
 HELLO_ELF := target/riscv64gc-unknown-none-elf/release/hello
@@ -34,6 +34,10 @@ build_agent_test:
 build_policy_test:
 	cargo build -p policy_test --release
 
+# Build the smp_test user-space process for the disk image
+build_smp_test:
+	cargo build -p smp_test --release
+
 # Build the kernel (depends on user_program for include_bytes! path)
 build_kernel: build_user_program
 	cargo build -p veridian-kernel --release
@@ -45,13 +49,13 @@ build: disk build_kernel
 
 # Create disk.img: a POSIX ustar TAR archive containing all user-space programs.
 # The TAR format is understood by the kernel's InitRAMFS parser.
-disk: build_hello build_neural_test build_semantic_test build_agent_test build_policy_test
+disk: build_hello build_neural_test build_semantic_test build_agent_test build_policy_test build_smp_test
 	@echo "[DISK] Building disk image: $(DISK_IMG)"
 	@# Remove stale image if it exists
 	@rm -f $(DISK_IMG)
 	@# Create a POSIX ustar TAR containing all user-space ELF binaries
 	@# We use --format=ustar to ensure the kernel parser gets a known format
-	cd target/riscv64gc-unknown-none-elf/release && tar cf ../../../$(DISK_IMG) --format=ustar hello neural_test semantic_test agent_test policy_test
+	cd target/riscv64gc-unknown-none-elf/release && tar cf ../../../$(DISK_IMG) --format=ustar hello neural_test semantic_test agent_test policy_test smp_test
 	@echo "[DISK] Created $(DISK_IMG) (ustar TAR):"
 	@tar tf $(DISK_IMG)
 	@ls -lh $(DISK_IMG)

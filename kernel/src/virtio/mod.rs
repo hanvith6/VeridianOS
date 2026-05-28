@@ -13,6 +13,7 @@
 //! - QEMU virt machine memory map (hw/riscv/virt.c in QEMU source)
 
 pub mod blk;
+pub mod net;
 
 // ---------------------------------------------------------------------------
 // VirtIO MMIO Register Offsets (relative to device base address)
