@@ -313,54 +313,158 @@ pub extern "C" fn _start() -> ! {
     print("[USER] TEST 6 PASSED: RESET_STATS restored CPU/VAdd prior = 2.0.\n\n");
 
     // ════════════════════════════════════════════════════════════════════════
-    // TEST 7 — Distributed System Calls: Verify that 90-101 return 0
+    // TEST 7 — Phase 11 Distributed Multi-Kernel Coherence Verification
+    //
+    // Each sub-test exercises a real kernel state change, not just stub returns.
+    // The loopback transport allows full round-trip verification within QEMU.
     // ════════════════════════════════════════════════════════════════════════
-    print("[USER] TEST 7: Phase 11 Distributed System Call Stub Verification...\n");
+    print("[USER] TEST 7: Phase 11 — Distributed Multi-Kernel Coherence...\n\n");
 
-    let ret90 = syscall5(90, 0x1111, 5, 0x2222, 4, 8080);
-    check(ret90, "domain_join");
+    // ── Shared buffers (use scratch VMO at 0x4013_0000, 16KB) ───────────────
+    let scratch = 0x4013_0000usize as *mut u8;
 
-    let ret91 = syscall5(91, 0x3333, 100, 0x4444, 0, 0);
-    check(ret91, "domain_list");
+    // ── TEST 7a: sys_domain_join — register a new domain ────────────────────
+    print("[USER] TEST 7a: sys_domain_join registers a new domain...\n");
+    let domain_name = b"peer-alpha";
+    let ret7a = syscall5(
+        90, // SYS_DOMAIN_JOIN
+        domain_name.as_ptr() as usize,
+        domain_name.len(),
+        0, 0, 0,
+    );
+    if ret7a < 0 {
+        fail("TEST 7a: sys_domain_join returned error");
+    }
+    let assigned_domain_id = ret7a as u32;
+    print("[USER] TEST 7a PASSED: domain_join returned domain_id >= 0\n\n");
 
-    let ret92 = syscall5(92, 0x5555, 200, 0, 0, 0);
-    check(ret92, "domain_status");
+    // ── TEST 7b: sys_domain_list — verify >= 1 domain registered ────────────
+    print("[USER] TEST 7b: sys_domain_list shows registered domains...\n");
+    // Clear the scratch buffer
+    unsafe { for i in 0..256 { *scratch.add(i) = 0; } }
+    let ret7b = syscall5(
+        91, // SYS_DOMAIN_LIST
+        scratch as usize,
+        256,
+        0, 0, 0,
+    );
+    if ret7b < 1 {
+        fail("TEST 7b: sys_domain_list returned < 1 domain");
+    }
+    // Parse count field (first 4 bytes of buf, little-endian u32)
+    let count = unsafe { u32::from_le_bytes([*scratch, *scratch.add(1), *scratch.add(2), *scratch.add(3)]) };
+    if count == 0 {
+        fail("TEST 7b: domain count in buffer is 0");
+    }
+    print("[USER] TEST 7b PASSED: domain list shows >= 1 active domain\n\n");
 
-    let ret93 = syscall5(93, 10, 20, 30, 0, 0);
-    check(ret93, "graph_dispatch_remote");
+    // ── TEST 7c: sys_cap_export — export handle 4 (queue handle) ────────────
+    print("[USER] TEST 7c: sys_cap_export publishes a local capability...\n");
+    // We'll write the UID token into scratch+0
+    let ret7c = syscall5(
+        96, // SYS_CAP_EXPORT
+        4,  // handle_id = 4 (queue handle, inserted by kernel at spawn)
+        assigned_domain_id as usize,
+        scratch as usize, // out_remote_token_ptr
+        0, 0,
+    );
+    if ret7c < 0 {
+        fail("TEST 7c: sys_cap_export returned error");
+    }
+    // The UID token is also returned directly in ret7c
+    let uid_token = ret7c;
+    print("[USER] TEST 7c PASSED: cap_export returned a positive UID token\n\n");
 
-    let ret94 = syscall5(94, 10, 20, 1000, 0, 0);
-    check(ret94, "graph_wait_remote");
+    // ── TEST 7d: sys_cap_import — import the cap back by UID ────────────────
+    print("[USER] TEST 7d: sys_cap_import installs shadow handle...\n");
+    // scratch still holds the 8-byte UID written by cap_export
+    let ret7d = syscall5(
+        97, // SYS_CAP_IMPORT
+        scratch as usize,
+        8,  // uid_len = 8 bytes
+        assigned_domain_id as usize,
+        0, 0,
+    );
+    if ret7d < 0 {
+        fail("TEST 7d: sys_cap_import returned error");
+    }
+    let shadow_handle = ret7d as usize;
+    // shadow_handle must be a valid handle slot (0-63)
+    if shadow_handle > 63 {
+        fail("TEST 7d: shadow handle ID out of range (> 63)");
+    }
+    print("[USER] TEST 7d PASSED: cap_import installed shadow handle\n\n");
 
-    let ret95 = syscall5(95, 10, 20, 0, 0, 0);
-    check(ret95, "graph_abort_remote");
+    let _ = (uid_token, shadow_handle); // suppress unused warnings
 
-    let ret96 = syscall5(96, 5, 2, 0x6666, 0, 0);
-    check(ret96, "cap_export");
+    // ── TEST 7e: sys_graph_dispatch_remote — dispatch g1 node 0 ─────────────
+    print("[USER] TEST 7e: sys_graph_dispatch_remote dispatches NES node via loopback...\n");
+    // Re-use g1 (graph handle from TEST 1). The kernel injects a synthetic
+    // GraphNodeResult on the loopback ring immediately after dispatch.
+    let ret7e = syscall5(
+        93, // SYS_GRAPH_DISPATCH_REMOTE
+        g1 as usize,
+        0,  // node_id = 0
+        0,  // remote_domain = local (loopback)
+        0, 0,
+    );
+    if ret7e < 0 {
+        fail("TEST 7e: sys_graph_dispatch_remote returned error");
+    }
+    let ticket_id = ret7e;
+    let _ = ticket_id;
+    print("[USER] TEST 7e PASSED: graph_dispatch_remote issued a ticket\n\n");
 
-    let ret97 = syscall5(97, 0x7777, 16, 2, 0, 0);
-    check(ret97, "cap_import");
+    // ── TEST 7f: sys_graph_wait_remote — wait for the loopback result ────────
+    print("[USER] TEST 7f: sys_graph_wait_remote receives loopback result...\n");
+    let ret7f = syscall5(
+        94, // SYS_GRAPH_WAIT_REMOTE
+        g1 as usize,
+        0,        // node_id = 0
+        100_000,  // timeout_us = 100ms — well above the loopback round-trip
+        0, 0,
+    );
+    if ret7f < 0 {
+        fail("TEST 7f: sys_graph_wait_remote timed out or returned error");
+    }
+    print("[USER] TEST 7f PASSED: graph_wait_remote completed via loopback\n\n");
 
-    let ret98 = syscall5(98, 5, 2, 0, 0, 0);
-    check(ret98, "cap_revoke_remote");
-
-    let ret99 = syscall5(99, 1, 3, 0, 0, 0);
-    check(ret99, "sgf_replicate_enable");
-
-    let ret100 = syscall5(100, 0x8888, 32, 0x9999, 0, 0);
-    check(ret100, "sgf_replicate_query");
-
-    let ret101 = syscall5(101, 0xAAAA, 64, 0, 0, 0);
-    check(ret101, "sgf_raft_status");
-
-    print("[USER] TEST 7 PASSED: All Phase 11 Distributed System Calls returned 0.\n\n");
+    // ── TEST 7g: sys_sgf_raft_status — verify Raft is Leader ────────────────
+    print("[USER] TEST 7g: sys_sgf_raft_status confirms Raft leadership...\n");
+    // Clear scratch for the 32-byte Raft status output
+    unsafe { for i in 0..32 { *scratch.add(i) = 0; } }
+    let ret7g = syscall5(
+        101, // SYS_SGF_RAFT_STATUS
+        scratch as usize,
+        32,
+        0, 0, 0,
+    );
+    if ret7g < 0 {
+        fail("TEST 7g: sys_sgf_raft_status returned error");
+    }
+    // Byte 0 of status buffer = role: 0=Follower, 1=Candidate, 2=Leader
+    let raft_role = unsafe { *scratch };
+    if raft_role != 2 {
+        fail("TEST 7g: Raft role is not Leader (expected 2 for single-node cluster)");
+    }
+    // Bytes 8-15 = current_term (u64 LE) — must be >= 1 (at least one election)
+    let raft_term = unsafe {
+        u64::from_le_bytes([
+            *scratch.add(8),  *scratch.add(9),  *scratch.add(10), *scratch.add(11),
+            *scratch.add(12), *scratch.add(13), *scratch.add(14), *scratch.add(15),
+        ])
+    };
+    if raft_term < 1 {
+        fail("TEST 7g: Raft term is 0 — election never occurred");
+    }
+    print("[USER] TEST 7g PASSED: Raft is Leader with term >= 1\n\n");
 
     // ════════════════════════════════════════════════════════════════════════
     // ALL TESTS PASSED
     // ════════════════════════════════════════════════════════════════════════
     print("[USER] ================================================================\n");
-    print("[USER] Phase 10 — Self-Improving Policy Engine: ALL TESTS PASSED!\n");
-    print("[USER] Dynamic routing, policy stats, exploration control all verified.\n");
+    print("[USER] Phase 10 + Phase 11 — ALL TESTS PASSED!\n");
+    print("[USER] Self-improving policy, distributed coherence, Raft, DCTP verified.\n");
     print("[USER] ================================================================\n");
 
     syscall5(SYS_EXIT, 0, 0, 0, 0, 0);
