@@ -1,0 +1,16 @@
+[package]
+name = "semantic_test"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "semantic_test"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"    # Optimize for size
+lto = true
+panic = "abort"
+strip = false      # Keep symbols for kernel debug output
