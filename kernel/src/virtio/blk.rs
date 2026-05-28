@@ -132,15 +132,15 @@ unsafe impl Sync for LegacyVirtQueue {}
 static VQ_BUF: LegacyVirtQueue = LegacyVirtQueue { data: core::cell::UnsafeCell::new([0u8; 8192]) };
 
 unsafe fn desc_table() -> *mut VirtqDesc {
-    unsafe { VQ_BUF.data.get() as *mut VirtqDesc }
+    VQ_BUF.data.get() as *mut VirtqDesc
 }
 
 unsafe fn avail_ring() -> *mut VirtqAvail {
-    unsafe { (VQ_BUF.data.get() as usize + 128) as *mut VirtqAvail }
+    (VQ_BUF.data.get() as usize + 128) as *mut VirtqAvail
 }
 
 unsafe fn used_ring() -> *mut VirtqUsed {
-    unsafe { (VQ_BUF.data.get() as usize + 4096) as *mut VirtqUsed }
+    (VQ_BUF.data.get() as usize + 4096) as *mut VirtqUsed
 }
 
 /// Global singleton VirtIO block driver state (control/metadata only).

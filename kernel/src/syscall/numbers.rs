@@ -181,4 +181,10 @@ pub const SYS_SGF_REPLICATE_QUERY: usize = 100;
 /// Syscall: Query local Raft status.
 pub const SYS_SGF_RAFT_STATUS: usize = 101;
 
+/// Syscall: Register a user-space exception handler.
+pub const SYS_REGISTER_EXCEPTION_HANDLER: usize = 110;
+
+/// Syscall: Return from user-space exception handler.
+pub const SYS_EXCEPTION_RETURN: usize = 111;
+
 

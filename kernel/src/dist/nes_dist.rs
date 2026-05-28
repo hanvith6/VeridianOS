@@ -42,6 +42,7 @@ pub struct DistTicket {
 }
 
 impl DistTicket {
+    #[allow(dead_code)]
     const fn free(id: u8) -> Self {
         Self { ticket_id: id, graph_id: 0, node_id: 0, seq: 0, status: TicketStatus::Free }
     }
@@ -68,6 +69,7 @@ impl TicketPool {
         Self { tickets, seq: 0 }
     }
 
+    #[allow(dead_code)]
     fn next_seq(&mut self) -> u32 {
         let s = self.seq;
         self.seq = self.seq.wrapping_add(1);

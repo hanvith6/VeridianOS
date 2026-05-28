@@ -55,3 +55,35 @@ pub fn sbi_send_ipi(hart_mask: usize, hart_mask_base: usize) {
     sbi_call(0x735049, 0, hart_mask, hart_mask_base);
 }
 
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct SbiRet {
+    pub error: isize,
+    pub value: isize,
+}
+
+#[inline]
+fn sbi_call_3(extension: usize, function: usize, arg0: usize, arg1: usize, arg2: usize) -> SbiRet {
+    let mut err;
+    let mut val;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") extension,
+            in("a6") function,
+            in("a0") arg0,
+            in("a1") arg1,
+            in("a2") arg2,
+            lateout("a0") err,
+            lateout("a1") val,
+        );
+    }
+    SbiRet { error: err, value: val }
+}
+
+pub fn sbi_hart_start(hartid: usize, start_addr: usize, opaque: usize) -> SbiRet {
+    // EID: 0x48534D (HSM)
+    // FID: 0 (hart_start)
+    sbi_call_3(0x48534D, 0, hartid, start_addr, opaque)
+}
+

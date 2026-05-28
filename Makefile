@@ -72,6 +72,9 @@ debug: build
 		-nographic \
 		-serial mon:stdio \
 		-bios default \
+		-smp 4 \
+		-device virtio-net-device \
+		-netdev user,id=net0 \
 		-drive id=hd0,file=$(DISK_IMG),format=raw,if=none \
 		-device virtio-blk-device,drive=hd0 \
 		-kernel target/riscv64gc-unknown-none-elf/release/veridian-kernel \

@@ -53,6 +53,7 @@ pub struct Process {
     pub page_table: PageTable,
     pub handle_table: HandleTable,
     pub next_stack_va: usize,
+    pub exception_handler: usize,
 }
 
 impl Process {
@@ -93,6 +94,7 @@ impl Process {
             page_table: pt,
             handle_table,
             next_stack_va: 0x4000_0000,
+            exception_handler: 0,
         }
     }
 
@@ -202,7 +204,7 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
     let mut process = Process::new(pid);
 
     // 2. Allocate and map the user stack
-    let (user_stack_virt, user_stack_top) = process.alloc_stack()?;
+    let (_user_stack_virt, user_stack_top) = process.alloc_stack()?;
 
     if name == "neural_test" || name == "policy_test" {
         // Insert DeviceQueue capability at handle 4

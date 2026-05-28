@@ -20,6 +20,9 @@
 .globl _start
 
 _start:
+    # Save hart ID in thread pointer register (tp)
+    mv      tp, a0
+
     # ---------------------------------------------------------------
     # Hart selection: Only hart 0 boots the kernel.
     # Other harts spin in a WFI loop until woken by IPI.
@@ -34,6 +37,23 @@ _start:
     # Stack grows downward; _stack_top is defined in linker.ld
     # ---------------------------------------------------------------
     la      sp, _stack_top
+
+.globl _secondary_start
+_secondary_start:
+    # Save hart ID in thread pointer register (tp)
+    mv      tp, a0
+
+    # Set up stack pointer for this hart: sp = _stack_top - (hart_id * 8192)
+    la      sp, _stack_top
+    li      t0, 8192
+    mul     t0, a0, t0
+    sub     sp, sp, t0
+
+    # Jump to secondary entry point in Rust
+    call    ksecondary_main
+_secondary_park:
+    wfi
+    j       _secondary_park
 
     # ---------------------------------------------------------------
     # Zero out BSS section

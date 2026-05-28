@@ -41,6 +41,16 @@ pub fn init() {
     }
 }
 
+/// Configure trap vector on secondary harts (no debug printing).
+pub fn init_secondary() {
+    unsafe {
+        core::arch::asm!("csrw stvec, {}", in(reg) trap_vector as *const () as usize);
+        core::arch::asm!("csrs sstatus, {}", in(reg) 0x40000); // Enable SUM
+        core::arch::asm!("csrs sie, {}", in(reg) 0x20);       // Enable STIE
+        crate::sbi::set_timer(crate::sbi::get_time() + 100_000);
+    }
+}
+
 /// High-level trap handler called from assembly.
 ///
 /// Parameters:
@@ -66,12 +76,17 @@ pub unsafe extern "C" fn trap_handler(tf: *mut TrapFrame) {
         if code == 5 {
             // Schedule the next timer interrupt (10ms in the future)
             crate::sbi::set_timer(crate::sbi::get_time() + 100_000);
-            // Decrement lifespans of active domains in the cluster
-            crate::dist::cluster::heartbeat_tick();
-            // Drive Raft election timeouts and leader heartbeats
-            crate::dist::raft::raft_tick();
-            // Process incoming DKCP messages (Raft, caps, NES results)
-            crate::dist::nes_dist::process_incoming();
+
+            // Only Hart 0 runs the distributed state machines, liveness timers and DKCP polling.
+            if thread::get_hart_id() == 0 {
+                // Decrement lifespans of active domains in the cluster
+                crate::dist::cluster::heartbeat_tick();
+                // Drive Raft election timeouts and leader heartbeats
+                crate::dist::raft::raft_tick();
+                // Process incoming DKCP messages (Raft, caps, NES results)
+                crate::dist::nes_dist::process_incoming();
+            }
+
             // Supervisor timer interrupt: yield current thread for preemption
             thread::schedule();
 
@@ -87,9 +102,31 @@ pub unsafe extern "C" fn trap_handler(tf: *mut TrapFrame) {
     } else {
         if code == 8 {
             // Environment call from User Mode (U-mode ecall)
-            let (id, arg0, arg1, arg2, arg3, arg4) = unsafe {
+            let id = unsafe { (*tf).regs[17] };
+            if id == crate::syscall::numbers::SYS_EXCEPTION_RETURN {
+                let restored = thread::with_current_thread_mut(|t| {
+                    if let Some(saved) = t.saved_user_context.take() {
+                        unsafe {
+                            *tf = saved;
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }).unwrap_or(false);
+                if restored {
+                    return;
+                } else {
+                    unsafe {
+                        (*tf).regs[10] = -14isize as usize; // EFAULT
+                        (*tf).sepc += 4;
+                    }
+                    return;
+                }
+            }
+
+            let (arg0, arg1, arg2, arg3, arg4) = unsafe {
                 (
-                    (*tf).regs[17], // a7: syscall number
                     (*tf).regs[10], // a0: arg0
                     (*tf).regs[11], // a1: arg1
                     (*tf).regs[12], // a2: arg2
@@ -105,6 +142,27 @@ pub unsafe extern "C" fn trap_handler(tf: *mut TrapFrame) {
                 (*tf).sepc += 4;
             }
         } else {
+            // Check if exception is a page fault from U-mode
+            let from_user = (unsafe { (*tf).sstatus } & (1 << 8)) == 0;
+            if from_user && (code == 12 || code == 13 || code == 15) {
+                let handler = crate::process::with_current_process(|proc| proc.exception_handler).unwrap_or(0);
+                if handler != 0 {
+                    // Save user context to thread
+                    thread::with_current_thread_mut(|t| {
+                        t.saved_user_context = Some(unsafe { *tf });
+                    });
+
+                    // Set up handler context: a0 = scause, a1 = stval, a2 = original sepc
+                    unsafe {
+                        (*tf).regs[10] = scause;
+                        (*tf).regs[11] = stval;
+                        (*tf).regs[12] = (*tf).sepc;
+                        (*tf).sepc = handler;
+                    }
+                    return;
+                }
+            }
+
             // Unhandled exception: print detailed diagnostic and panic
             unsafe {
                 let active_satp: usize;

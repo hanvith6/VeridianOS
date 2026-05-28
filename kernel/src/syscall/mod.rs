@@ -11,8 +11,6 @@ use crate::dist;
 
 use crate::capability::{Handle, Rights};
 use crate::println;
-use crate::process::Process;
-use spin::Mutex;
 
 // A simple static process instance representing the currently executing process has been removed
 // in favor of process::PROCESS_TABLE and process::with_current_process.
@@ -73,11 +71,20 @@ pub fn syscall_handler(
         numbers::SYS_SGF_REPLICATE_ENABLE => dist::syscalls::sys_sgf_replicate_enable(arg0, arg1),
         numbers::SYS_SGF_REPLICATE_QUERY => dist::syscalls::sys_sgf_replicate_query(arg0, arg1, arg2),
         numbers::SYS_SGF_RAFT_STATUS => dist::syscalls::sys_sgf_raft_status(arg0, arg1),
+        numbers::SYS_REGISTER_EXCEPTION_HANDLER => sys_register_exception_handler(arg0),
         _ => {
             println!("[SYSCALL] Warning: Unknown system call ID: {}", id);
             -1 // ENOSYS: Function not implemented
         }
     }
+}
+
+/// System Call: Register a user-space exception handler.
+fn sys_register_exception_handler(handler_ptr: usize) -> isize {
+    crate::process::with_current_process(|proc| {
+        proc.exception_handler = handler_ptr;
+        0
+    }).unwrap_or(-1)
 }
 
 /// System Call: Write a string to the UART console.

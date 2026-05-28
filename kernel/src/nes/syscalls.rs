@@ -3,7 +3,7 @@
 use crate::capability::{Handle, ObjectType, Rights};
 use super::graph::{allocate_graph, deallocate_graph, GRAPH_POOL, MAX_NODES_PER_GRAPH, MAX_DEPENDENCIES, MAX_INPUTS, MAX_OUTPUTS, TaskNode, TaskGraph, NodeState};
 use super::types::{OpType, DeviceType, NodeConfig};
-use super::queue::{QueueDescriptor, CPU_QUEUE, GPU_QUEUE, NPU_QUEUE, QUEUE_RING_SIZE};
+use super::queue::{QueueDescriptor, CPU_QUEUE, GPU_QUEUE, NPU_QUEUE};
 use crate::memory::PageTable;
 
 // Helper to read RISC-V time

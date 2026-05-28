@@ -296,6 +296,9 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
     thread::spawn_thread(nes::simulator::gpu_worker).expect("Failed to spawn GPU worker");
     thread::spawn_thread(nes::simulator::npu_worker).expect("Failed to spawn NPU worker");
 
+    // Boot secondary harts
+    smp::init();
+
     println!("[BOOT] Yielding to scheduler...");
     thread::schedule();
 
@@ -429,4 +432,45 @@ fn parse_bootargs(dtb_ptr: usize) -> Option<&'static str> {
     }
 
     None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ksecondary_main(_hart_id: usize) -> ! {
+    // Enable paging
+    let satp_val = crate::memory::KERNEL_PAGE_TABLE.lock().satp();
+    unsafe {
+        core::arch::asm!("csrw satp, {}", in(reg) satp_val);
+        core::arch::asm!("sfence.vma");
+    }
+
+    crate::trap::init_secondary();
+
+    // Enable interrupts
+    unsafe {
+        core::arch::asm!("csrs sstatus, {}", in(reg) 0x2usize);
+    }
+
+    loop {
+        crate::process::thread::schedule();
+        unsafe {
+            core::arch::asm!("wfi");
+        }
+    }
+}
+
+pub mod smp {
+    pub fn init() {
+        unsafe extern "C" {
+            fn _secondary_start();
+        }
+        let start_addr = _secondary_start as *const () as usize;
+        for hart_id in 1..4 {
+            let ret = crate::sbi::sbi_hart_start(hart_id, start_addr, 0);
+            if ret.error == 0 {
+                crate::println!("[BOOT] Woke up secondary hart {}", hart_id);
+            } else {
+                crate::println!("[BOOT] Failed to wake up secondary hart {}: error={}", hart_id, ret.error);
+            }
+        }
+    }
 }

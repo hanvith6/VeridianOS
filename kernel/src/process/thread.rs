@@ -27,7 +27,7 @@ pub struct ThreadContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
     Ready,
-    Running,
+    Running(usize), // Running on hart_id
     Blocked,
     Exited,
 }
@@ -49,6 +49,7 @@ pub struct Thread {
     pub satp: usize,
     pub user_entry: Option<usize>,
     pub user_sp: Option<usize>,
+    pub saved_user_context: Option<crate::trap::TrapFrame>,
 }
 
 impl Thread {
@@ -63,6 +64,7 @@ impl Thread {
             satp,
             user_entry: None,
             user_sp: None,
+            saved_user_context: None,
         }
     }
 
@@ -91,17 +93,26 @@ unsafe extern "C" {
 /// The maximum number of threads the scheduler can manage.
 pub const MAX_THREADS: usize = 16;
 
+/// Read the current hart ID from the thread pointer register (tp)
+pub fn get_hart_id() -> usize {
+    let id: usize;
+    unsafe {
+        core::arch::asm!("mv {}, tp", out(reg) id);
+    }
+    id
+}
+
 /// Scheduler state.
 struct SchedulerState {
     threads: [Option<Thread>; MAX_THREADS],
-    current_idx: usize,
+    current_idx: [usize; 4],
 }
 
 impl SchedulerState {
     const fn new() -> Self {
         Self {
             threads: [const { None }; MAX_THREADS],
-            current_idx: 0,
+            current_idx: [0; 4],
         }
     }
 
@@ -127,56 +138,62 @@ impl SchedulerState {
         Err("Thread queue is full")
     }
 
-    /// Run the Round-Robin scheduler to switch to the next ready thread.
-    fn schedule(&mut self) {
-        let mut next_idx = self.current_idx;
+    /// Try to switch the current hart to the next ready thread.
+    /// Returns `true` if a thread is running, `false` if the current thread is blocked/exited and no other ready threads exist.
+    fn try_schedule(&mut self) -> bool {
+        let hart_id = get_hart_id();
+        let curr_idx = self.current_idx[hart_id];
+        let mut next_idx = curr_idx;
 
         // Find the next thread that is in the Ready state
-        loop {
+        let found = loop {
             next_idx = (next_idx + 1) % MAX_THREADS;
-            if let Some(ref t) = self.threads[next_idx]
-                && t.state == ThreadState::Ready
-            {
-                break;
-            }
-            // If we looped back to current and nothing else is ready, do nothing
-            if next_idx == self.current_idx {
-                return;
-            }
-        }
-
-        let current_ptr = &mut self.threads[self.current_idx] as *mut Option<Thread>;
-        let next_ptr = &mut self.threads[next_idx] as *mut Option<Thread>;
-
-        unsafe {
-            let current_opt = &mut *current_ptr;
-            let next_opt = &mut *next_ptr;
-
-            if let (Some(curr), Some(next)) = (current_opt, next_opt) {
-                if curr.state == ThreadState::Running {
-                    curr.state = ThreadState::Ready;
+            if let Some(ref t) = self.threads[next_idx] {
+                if t.state == ThreadState::Ready {
+                    break true;
                 }
-                next.state = ThreadState::Running;
-                self.current_idx = next_idx;
+            }
+            if next_idx == curr_idx {
+                break false;
+            }
+        };
 
-                // Commented out to prevent deadlocking on uart::WRITER during preemptive scheduling
-                /*
-                crate::println!(
-                    "[SCHED] Switching context: current_ctx=0x{:X}, next_ctx=0x{:X}",
-                    &mut curr.context as *mut _ as usize,
-                    &next.context as *const _ as usize
-                );
-                */
+        if found {
+            let current_ptr = &mut self.threads[curr_idx] as *mut Option<Thread>;
+            let next_ptr = &mut self.threads[next_idx] as *mut Option<Thread>;
 
-                // Switch page tables to the target thread's address space
-                let next_satp = next.satp;
-                core::arch::asm!("csrw satp, {}", in(reg) next_satp);
-                core::arch::asm!("sfence.vma");
+            unsafe {
+                let current_opt = &mut *current_ptr;
+                let next_opt = &mut *next_ptr;
 
-                // Perform the physical register swap
-                switch_context(&mut curr.context, &next.context);
+                if let (Some(curr), Some(next)) = (current_opt, next_opt) {
+                    if let ThreadState::Running(h) = curr.state {
+                        if h == hart_id {
+                            curr.state = ThreadState::Ready;
+                        }
+                    }
+                    next.state = ThreadState::Running(hart_id);
+                    self.current_idx[hart_id] = next_idx;
+
+                    // Switch page tables to the target thread's address space
+                    let next_satp = next.satp;
+                    core::arch::asm!("csrw satp, {}", in(reg) next_satp);
+                    core::arch::asm!("sfence.vma");
+
+                    // Perform the physical register swap
+                    switch_context(&mut curr.context, &next.context);
+                    return true;
+                }
+            }
+        } else {
+            // Keep running the current thread if it is still Running on this hart
+            if let Some(ref mut curr) = self.threads[curr_idx] {
+                if curr.state == ThreadState::Running(hart_id) {
+                    return true;
+                }
             }
         }
+        false
     }
 }
 
@@ -204,7 +221,8 @@ fn user_mode_trampoline() -> ! {
 
     let (entry, user_sp) = {
         let sched = SCHEDULER.lock();
-        let current_idx = sched.current_idx;
+        let hart_id = get_hart_id();
+        let current_idx = sched.current_idx[hart_id];
         let thread = sched.threads[current_idx].as_ref().unwrap();
         (thread.user_entry.unwrap_or(0), thread.user_sp.unwrap_or(0))
     };
@@ -244,14 +262,28 @@ pub fn spawn_user_thread(entry_point: usize, stack_top: usize, satp: usize, pid:
 
 /// Yield execution to the next thread.
 pub fn schedule() {
-    SCHEDULER.lock().schedule();
+    loop {
+        let mut sched = SCHEDULER.lock();
+        if sched.try_schedule() {
+            break;
+        }
+        drop(sched);
+        unsafe {
+            // Enable supervisor interrupts (SIE bit in sstatus is bit 1)
+            core::arch::asm!("csrs sstatus, {}", in(reg) 0x2usize);
+            core::arch::asm!("wfi");
+            // Disable supervisor interrupts so scheduling operations are atomic
+            core::arch::asm!("csrc sstatus, {}", in(reg) 0x2usize);
+        }
+    }
 }
 
 /// Block the current thread and yield execution.
 pub fn block_current_thread() {
     {
         let mut sched = SCHEDULER.lock();
-        let current_idx = sched.current_idx;
+        let hart_id = get_hart_id();
+        let current_idx = sched.current_idx[hart_id];
         if let Some(ref mut curr) = sched.threads[current_idx] {
             curr.state = ThreadState::Blocked;
         }
@@ -273,7 +305,8 @@ pub fn wakeup_thread(tid: usize) {
 /// Get the TID of the currently running thread.
 pub fn current_tid() -> usize {
     let sched = SCHEDULER.lock();
-    let current_idx = sched.current_idx;
+    let hart_id = get_hart_id();
+    let current_idx = sched.current_idx[hart_id];
     if let Some(ref curr) = sched.threads[current_idx] {
         curr.tid
     } else {
@@ -284,12 +317,24 @@ pub fn current_tid() -> usize {
 /// Get the PID of the currently running thread's process.
 pub fn current_pid() -> usize {
     let sched = SCHEDULER.lock();
-    let current_idx = sched.current_idx;
+    let hart_id = get_hart_id();
+    let current_idx = sched.current_idx[hart_id];
     if let Some(ref curr) = sched.threads[current_idx] {
         curr.pid
     } else {
         0
     }
+}
+
+/// Execute a closure with a mutable reference to the currently running thread.
+pub fn with_current_thread_mut<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut Thread) -> R,
+{
+    let mut sched = SCHEDULER.lock();
+    let hart_id = get_hart_id();
+    let current_idx = sched.current_idx[hart_id];
+    sched.threads[current_idx].as_mut().map(f)
 }
 
 /// Check if a thread exists and if it has exited.
@@ -311,19 +356,37 @@ pub fn init() {
     crate::println!("[DEBUG] SCHEDULER.threads address: 0x{:X}", &raw const sched.threads as usize);
     crate::println!("[DEBUG] SCHEDULER.threads[0] address: 0x{:X}", &raw const sched.threads[0] as usize);
     crate::println!("[DEBUG] SCHEDULER.threads[1] address: 0x{:X}", &raw const sched.threads[1] as usize);
-    // Register the current boot context as thread 0 (Running).
+    // Register the current boot context as thread 0 (Running on hart 0).
     let boot_thread = Thread {
         tid: 0,
         pid: 1, // boot thread runs the root process (PID 1)
-        state: ThreadState::Running,
+        state: ThreadState::Running(0),
         context: ThreadContext::default(),
         stack: None, // Dummy stack since we are already using the boot stack
         satp: crate::memory::KERNEL_PAGE_TABLE.lock().satp(),
         user_entry: None,
         user_sp: None,
+        saved_user_context: None,
     };
     sched.threads[0] = Some(boot_thread);
-    sched.current_idx = 0;
+    sched.current_idx[0] = 0;
+
+    // Register dummy threads for secondary harts 1, 2, 3 in slots 1, 2, 3
+    for hart_id in 1..4 {
+        let dummy_thread = Thread {
+            tid: 0x100 + hart_id,
+            pid: 0,
+            state: ThreadState::Running(hart_id),
+            context: ThreadContext::default(),
+            stack: None,
+            satp: crate::memory::KERNEL_PAGE_TABLE.lock().satp(),
+            user_entry: None,
+            user_sp: None,
+            saved_user_context: None,
+        };
+        sched.threads[hart_id] = Some(dummy_thread);
+        sched.current_idx[hart_id] = hart_id;
+    }
 }
 
 /// Forcefully release the scheduler lock.
@@ -343,7 +406,8 @@ pub unsafe fn release_lock() {
 pub fn exit_current_thread() -> ! {
     {
         let mut sched = SCHEDULER.lock();
-        let current_idx = sched.current_idx;
+        let hart_id = get_hart_id();
+        let current_idx = sched.current_idx[hart_id];
         if let Some(ref mut curr) = sched.threads[current_idx] {
             curr.state = ThreadState::Exited;
             crate::println!("[SCHED] Thread {} exited.", curr.tid);
