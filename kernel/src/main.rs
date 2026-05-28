@@ -210,7 +210,8 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
     // 7.8. Initialize Distributed Multi-Kernel Coherence
     println!("[BOOT] Initializing Distributed Kernel Coherence...");
     dist::cluster::cluster_init(dist::types::KernelDomainId(0));
-    dist::raft::init();
+    dist::raft::raft_init();
+    println!("[BOOT] Distributed Multi-Kernel Coherence initialized.");
 
     // -----------------------------------------------------------------------
     // Phase 6: VirtIO Block Driver + InitRAMFS + Named Process Spawn
@@ -266,16 +267,7 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
         }
         Err(e) => {
             println!("[VIRTIO] Block device not available: {}", e);
-            println!("[VIRTIO] Falling back to legacy include_bytes! ELF loader.");
-
-            // Fallback: use the legacy embedded ELF from Phase 5 if no disk is present
-            static LEGACY_ELF: &[u8] =
-                include_bytes!("../../target/riscv64gc-unknown-none-elf/release/user_program");
-
-            match process::spawn("user_program (legacy)", LEGACY_ELF) {
-                Ok(tid) => println!("[BOOT] Legacy process spawned as thread tid={}", tid),
-                Err(e) => println!("[ERROR] Legacy spawn failed: {}", e),
-            }
+            println!("[VIRTIO] No legacy ELF fallback in Phase 11. Run `make disk` to rebuild disk.img.");
         }
     }
     println!("=== [PHASE 6 INIT COMPLETE] ===\n");
@@ -298,7 +290,7 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
     println!("[BOOT] Yielding to scheduler...");
     thread::schedule();
 
-    println!("\n[SUCCESS] VeridianOS Phase 10 fully verified!");
+    println!("\n[SUCCESS] VeridianOS Phase 11 fully verified!");
     println!("[INFO] Entering Supervisor idle loop...");
 
     unsafe {

@@ -68,8 +68,13 @@ pub unsafe extern "C" fn trap_handler(tf: *mut TrapFrame) {
             crate::sbi::set_timer(crate::sbi::get_time() + 100_000);
             // Decrement lifespans of active domains in the cluster
             crate::dist::cluster::heartbeat_tick();
+            // Drive Raft election timeouts and leader heartbeats
+            crate::dist::raft::raft_tick();
+            // Process incoming DKCP messages (Raft, caps, NES results)
+            crate::dist::nes_dist::process_incoming();
             // Supervisor timer interrupt: yield current thread for preemption
             thread::schedule();
+
         } else {
             unsafe {
                 crate::println!(
