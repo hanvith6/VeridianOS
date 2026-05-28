@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+    "user_program",
+    "user_programs/hello",
+    "user_programs/neural_test",
+    "user_programs/semantic_test",
+    "user_programs/agent_test",
+    "user_programs/policy_test",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["VeridianOS Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hanvith/VeridianOS"
+description = "The AI-Native, Capability-Based Operating System"
+
+[profile.release]
+opt-level = 2
+lto = true
+debug = true        # Keep debug info even in release for kernel debugging
+panic = "abort"     # No unwinding in kernel space
+
+[profile.dev]
+panic = "abort"

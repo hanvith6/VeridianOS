@@ -1,0 +1,17 @@
+# VeridianOS Git Ignore Config
+
+# Cargo build targets
+/target/
+
+# Generated disk images
+/disk.img
+
+# macOS system files
+.DS_Store
+
+# Kernel session cache
+.remember/
+
+# Backup files
+*.bk
+*.bak
