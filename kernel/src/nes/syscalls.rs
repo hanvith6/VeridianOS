@@ -1,10 +1,9 @@
 //! System call handlers for NES.
 
-use crate::syscall::CURRENT_PROCESS;
 use crate::capability::{Handle, ObjectType, Rights};
 use super::graph::{allocate_graph, deallocate_graph, GRAPH_POOL, MAX_NODES_PER_GRAPH, MAX_DEPENDENCIES, MAX_INPUTS, MAX_OUTPUTS, TaskNode, TaskGraph, NodeState};
 use super::types::{OpType, DeviceType, NodeConfig};
-use super::queue::{QueueDescriptor, CPU_QUEUE, GPU_QUEUE, NPU_QUEUE};
+use super::queue::{QueueDescriptor, CPU_QUEUE, GPU_QUEUE, NPU_QUEUE, QUEUE_RING_SIZE};
 use crate::memory::PageTable;
 
 // Helper to read RISC-V time
@@ -24,8 +23,7 @@ fn translate_user_address(pt: &mut PageTable, virt_addr: usize) -> Option<usize>
 }
 
 pub fn sys_graph_create() -> isize {
-    let mut proc_guard = CURRENT_PROCESS.lock();
-    if let Some(ref mut proc) = *proc_guard {
+    crate::process::with_current_process(|proc| {
         let graph_id = match allocate_graph(proc.pid) {
             Ok(id) => id,
             Err(_) => return -12, // -ENOMEM
@@ -46,9 +44,7 @@ pub fn sys_graph_create() -> isize {
                 -12 // -ENOMEM
             }
         }
-    } else {
-        -3 // -EPERM
-    }
+    }).unwrap_or(-3) // -EPERM
 }
 
 pub fn sys_graph_add_node(
@@ -58,8 +54,22 @@ pub fn sys_graph_add_node(
     dependency_count: usize,
     dependency_array_ptr: usize,
 ) -> isize {
-    let mut proc_guard = CURRENT_PROCESS.lock();
-    if let Some(ref mut proc) = *proc_guard {
+    // Validate config_ptr and dependency_array_ptr first
+    let valid = crate::process::with_current_process(|proc| {
+        if config_ptr == 0 || !proc.validate_user_buffer(config_ptr, core::mem::size_of::<NodeConfig>(), false) {
+            return false;
+        }
+        if dependency_count > 0 && (dependency_array_ptr == 0 || !proc.validate_user_buffer(dependency_array_ptr, dependency_count * core::mem::size_of::<u32>(), false)) {
+            return false;
+        }
+        true
+    }).unwrap_or(false);
+
+    if !valid {
+        return -14; // -EFAULT
+    }
+
+    crate::process::with_current_process(|proc| {
         // 1. Retrieve and validate graph handle
         let handle = match proc.handle_table.get(graph_handle) {
             Ok(h) => h,
@@ -84,8 +94,8 @@ pub fn sys_graph_add_node(
             _ => return -22, // -EINVAL
         };
 
-        // 3. Validate user space pointers
-        if config_ptr == 0 || config_ptr >= 0x8000_0000 || !config_ptr.is_multiple_of(core::mem::align_of::<NodeConfig>()) {
+        // 3. Validate alignment
+        if !config_ptr.is_multiple_of(core::mem::align_of::<NodeConfig>()) {
             return -14; // -EFAULT
         }
         let config = unsafe { &*(config_ptr as *const NodeConfig) };
@@ -93,10 +103,9 @@ pub fn sys_graph_add_node(
         if dependency_count > MAX_DEPENDENCIES {
             return -22; // -EINVAL
         }
-        if dependency_count > 0
-            && (dependency_array_ptr == 0 || dependency_array_ptr >= 0x8000_0000 || !dependency_array_ptr.is_multiple_of(core::mem::align_of::<u32>())) {
-                return -14; // -EFAULT
-            }
+        if dependency_count > 0 && !dependency_array_ptr.is_multiple_of(core::mem::align_of::<u32>()) {
+            return -14; // -EFAULT
+        }
 
         // 4. Validate NodeConfig parameters
         let exec_target = match config.execution_target {
@@ -213,14 +222,11 @@ pub fn sys_graph_add_node(
         } else {
             -9 // -EBADF
         }
-    } else {
-        -3 // -EPERM
-    }
+    }).unwrap_or(-3) // -EPERM
 }
 
 pub fn sys_graph_submit(graph_handle: usize, queue_handle: usize) -> isize {
-    let mut proc_guard = CURRENT_PROCESS.lock();
-    if let Some(ref mut proc) = *proc_guard {
+    crate::process::with_current_process(|proc| {
         // 1. Retrieve handles
         let graph_h = match proc.handle_table.get(graph_handle) {
             Ok(h) => h,
@@ -365,30 +371,30 @@ pub fn sys_graph_submit(graph_handle: usize, queue_handle: usize) -> isize {
                      let desc = graph.queue_descriptors[idx];
                      let mut target_queue = node.execution_target;
                      if target_queue == DeviceType::Auto {
-                         let size_bytes = desc.output_sizes[0];
-                         let best_dev = super::select_optimal_device(desc.op_type, size_bytes);
-                         crate::println!("[NEURAL_SCHED] Dynamic Routing Decision: Node {} ({:?}) -> {:?}", node.node_id, desc.op_type, best_dev);
-                         node.execution_target = best_dev;
-                         target_queue = best_dev;
+                          let size_bytes = desc.output_sizes[0];
+                          let best_dev = super::select_optimal_device(desc.op_type, size_bytes);
+                          crate::println!("[NEURAL_SCHED] Dynamic Routing Decision: Node {} ({:?}) -> {:?}", node.node_id, desc.op_type, best_dev);
+                          node.execution_target = best_dev;
+                          target_queue = best_dev;
                      }
                      match target_queue {
-                         DeviceType::Cpu => {
-                             let mut q = CPU_QUEUE.lock();
-                             let _ = q.enqueue(desc);
-                         }
-                         DeviceType::Gpu => {
-                             let mut q = GPU_QUEUE.lock();
-                             let index = q.head;
-                             let _ = q.enqueue(desc);
-                             crate::println!("[NEURAL_SCHED] Enqueued Node {} ({:?}) to GPU queue (Index: {}). Doorbell 0x89000000 triggered.", node.node_id, desc.op_type, index);
-                         }
-                         DeviceType::Npu => {
-                             let mut q = NPU_QUEUE.lock();
-                             let index = q.head;
-                             let _ = q.enqueue(desc);
-                             crate::println!("[NEURAL_SCHED] Enqueued Node {} ({:?}) to NPU queue (Index: {}). Doorbell 0x89001000 triggered.", node.node_id, desc.op_type, index);
-                         }
-                         _ => {}
+                          DeviceType::Cpu => {
+                              let mut q = CPU_QUEUE.lock();
+                              let _ = q.enqueue(desc);
+                          }
+                          DeviceType::Gpu => {
+                              let mut q = GPU_QUEUE.lock();
+                              let index = q.head;
+                              let _ = q.enqueue(desc);
+                              crate::println!("[NEURAL_SCHED] Enqueued Node {} ({:?}) to GPU queue (Index: {}). Doorbell 0x89000000 triggered.", node.node_id, desc.op_type, index);
+                          }
+                          DeviceType::Npu => {
+                              let mut q = NPU_QUEUE.lock();
+                              let index = q.head;
+                              let _ = q.enqueue(desc);
+                              crate::println!("[NEURAL_SCHED] Enqueued Node {} ({:?}) to NPU queue (Index: {}). Doorbell 0x89001000 triggered.", node.node_id, desc.op_type, index);
+                          }
+                          _ => {}
                      }
                 }
             }
@@ -397,32 +403,30 @@ pub fn sys_graph_submit(graph_handle: usize, queue_handle: usize) -> isize {
         } else {
             -9 // -EBADF
         }
-    } else {
-        -3 // -EPERM
-    }
+    }).unwrap_or(-3) // -EPERM
 }
 
 pub fn sys_graph_wait(graph_handle: usize, timeout_us: usize) -> isize {
-    let proc_guard = CURRENT_PROCESS.lock();
-    let proc = if let Some(ref p) = *proc_guard {
-        p
-    } else {
-        return -3; // -EPERM
-    };
+    let res = crate::process::with_current_process(|proc| {
+        // 1. Retrieve handle
+        let handle = match proc.handle_table.get(graph_handle) {
+            Ok(h) => h,
+            Err(_) => return Err(-9), // -EBADF
+        };
+        if handle.object_type != ObjectType::TaskGraph {
+            return Err(-9); // -EBADF
+        }
+        if !handle.rights.contains(Rights::READ) {
+            return Err(-13); // -EACCES
+        }
+        Ok(handle.object_ptr)
+    });
 
-    // 1. Retrieve handle
-    let handle = match proc.handle_table.get(graph_handle) {
-        Ok(h) => h,
-        Err(_) => return -9, // -EBADF
+    let graph_id = match res {
+        Some(Ok(id)) => id,
+        Some(Err(err)) => return err,
+        None => return -3, // -EPERM
     };
-    if handle.object_type != ObjectType::TaskGraph {
-        return -9; // -EBADF
-    }
-    if !handle.rights.contains(Rights::READ) {
-        return -13; // -EACCES
-    }
-    let graph_id = handle.object_ptr;
-    drop(proc_guard);
 
     // 2. Poll/Wait loop
     let start_time = read_time();
@@ -467,6 +471,19 @@ pub fn sys_policy_configure(op: usize, arg1: usize, arg2: usize) -> isize {
             if ptr == 0 || size < 72 {
                 return -22; // -EINVAL
             }
+            if ptr % 4 != 0 {
+                return -22; // -EINVAL: unaligned pointer for stats copy
+            }
+            
+            // Validate stats copy pointer
+            let valid = crate::process::with_current_process(|proc| {
+                proc.validate_user_buffer(ptr, 72, true)
+            }).unwrap_or(false);
+
+            if !valid {
+                return -14; // -EFAULT
+            }
+
             let stats = super::POLICY_STATS.lock();
             let src_ptr = stats.predicted_ticks_per_byte.as_ptr() as *const u8;
             unsafe {
@@ -492,4 +509,3 @@ pub fn sys_policy_configure(op: usize, arg1: usize, arg2: usize) -> isize {
         _ => -22 // -EINVAL
     }
 }
-

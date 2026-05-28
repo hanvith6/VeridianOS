@@ -79,18 +79,40 @@ impl Default for PolicyStats {
 
 pub static POLICY_STATS: spin::Mutex<PolicyStats> = spin::Mutex::new(PolicyStats::new());
 
+static PRNG_STATE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn get_random() -> f32 {
+    let mut state = PRNG_STATE.load(core::sync::atomic::Ordering::Relaxed);
+    if state == 0 {
+        // Seed once from rdtime
+        let mut r: u64 = 0;
+        unsafe {
+            core::arch::asm!("rdtime {}", out(reg) r);
+        }
+        state = if r == 0 { 0xACE1 } else { r };
+    }
+    
+    // Perform one step of xorshift64
+    let mut x = state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    
+    PRNG_STATE.store(x, core::sync::atomic::Ordering::Relaxed);
+    
+    // Normalize to [0.0, 1.0)
+    ((x & 0xFF_FFFF) as f32) / 16777216.0
+}
+
 pub fn select_optimal_device(op: OpType, size_bytes: usize) -> DeviceType {
     let stats_guard = POLICY_STATS.lock();
     let epsilon = stats_guard.exploration_rate;
     
-    let r: u64;
-    unsafe {
-        core::arch::asm!("rdtime {}", out(reg) r);
-    }
-    let rand_val = ((r % 1000) as f32) / 1000.0;
+    let rand_val = get_random();
     
     if rand_val < epsilon {
-        let dev_idx = (r % 3) as u32;
+        let rand_u64 = PRNG_STATE.load(core::sync::atomic::Ordering::Relaxed);
+        let dev_idx = (rand_u64 % 3) as u32;
         let selected = match dev_idx {
             0 => DeviceType::Cpu,
             1 => DeviceType::Gpu,

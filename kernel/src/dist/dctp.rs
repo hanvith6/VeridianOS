@@ -23,7 +23,7 @@ use super::types::{
 };
 use super::transport::dkcp_send;
 use crate::capability::{Handle, ObjectType, Rights};
-use crate::syscall::CURRENT_PROCESS;
+use crate::process::with_current_process;
 use crate::sbi::get_time;
 use crate::println;
 
@@ -62,15 +62,17 @@ fn derive_uid(handle_id: usize) -> [u8; 16] {
 /// 5. Return the lower 8 bytes of the UID interpreted as u64, truncated to isize.
 pub fn cap_export(handle_id: usize, _target_domain: usize) -> isize {
     // Step 1: read handle
-    let (obj_type, local_rights) = {
-        let proc_guard = CURRENT_PROCESS.lock();
-        match proc_guard.as_ref() {
-            None => return -3, // EPERM: no process
-            Some(p) => match p.handle_table.get(handle_id) {
-                Ok(h) => (h.object_type, h.rights),
-                Err(_) => return -9, // EBADF
-            }
+    let res = with_current_process(|p| {
+        match p.handle_table.get(handle_id) {
+            Ok(h) => Ok((h.object_type, h.rights)),
+            Err(_) => Err(-9), // EBADF
         }
+    });
+
+    let (obj_type, local_rights) = match res {
+        Some(Ok(val)) => val,
+        Some(Err(err)) => return err,
+        None => return -3, // EPERM
     };
 
     // Step 2: UID
@@ -135,6 +137,16 @@ pub fn cap_import(uid_ptr: usize, uid_len: usize, _src_domain: usize) -> isize {
     if uid_ptr == 0 || uid_len < 8 {
         return -22; // EINVAL
     }
+
+    // Validate that uid_ptr is a valid user pointer
+    let valid = with_current_process(|proc| {
+        proc.validate_user_buffer(uid_ptr, 8, false)
+    }).unwrap_or(false);
+
+    if !valid {
+        return -14; // -EFAULT
+    }
+
     let uid_prefix = unsafe {
         let bytes = core::slice::from_raw_parts(uid_ptr as *const u8, 8);
         let mut arr = [0u8; 8];
@@ -170,17 +182,20 @@ pub fn cap_import(uid_ptr: usize, uid_len: usize, _src_domain: usize) -> isize {
         found_rights,
     );
 
-    let mut proc_guard = CURRENT_PROCESS.lock();
-    match proc_guard.as_mut() {
-        None => -3,
-        Some(p) => match p.handle_table.insert(shadow) {
-            Ok(id) => {
-                println!("[DCTP] cap_import: installed shadow handle={} (origin_domain={})",
-                    id, found_type.0);
-                id as isize
-            }
+    match with_current_process(|p| {
+        match p.handle_table.insert(shadow) {
+            Ok(id) => id as isize,
             Err(_) => -12, // ENOMEM
         }
+    }) {
+        Some(res) => {
+            if res >= 0 {
+                println!("[DCTP] cap_import: installed shadow handle={} (origin_domain={})",
+                    res, found_type.0);
+            }
+            res
+        }
+        None => -3, // EPERM
     }
 }
 

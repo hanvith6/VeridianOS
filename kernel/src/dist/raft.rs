@@ -80,10 +80,15 @@ fn broadcast(msg: &DkcpMessage) {
 /// Initialize the Raft engine. Called once from kmain.
 pub fn raft_init() {
     let mut r = RAFT.lock();
-    r.role = RaftRole::Follower;
-    r.current_term = 0;
+    r.role = RaftRole::Leader;
+    r.current_term = 1;
     r.election_tick = ELECTION_TIMEOUT;
-    println!("[RAFT] Initialized: Follower, term=0, election_timeout={}", ELECTION_TIMEOUT);
+    let log_len = r.log.len as u64;
+    for i in 0..KernelDomainId::MAX_DOMAINS {
+        r.next_index[i] = log_len + 1;
+        r.match_index[i] = 0;
+    }
+    println!("[RAFT] Initialized: Leader, term=1, election_timeout={}", ELECTION_TIMEOUT);
 }
 
 /// Periodic tick — called from heartbeat_tick() in the timer interrupt.
@@ -218,7 +223,7 @@ pub fn handle_append_entries(msg: &DkcpMessage) {
     let leader_term = payload.term;
 
     let mut r = RAFT.lock();
-    if leader_term >= r.current_term {
+    if msg.src_domain != KernelDomainId::LOCAL && leader_term >= r.current_term {
         r.current_term = leader_term;
         r.role = RaftRole::Follower;
         r.election_tick = ELECTION_TIMEOUT; // Reset timeout on leader contact

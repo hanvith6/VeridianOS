@@ -12,6 +12,7 @@
 //! - "OS in 1000 Lines" (context switching)
 
 use spin::Mutex;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The callee-saved registers that must be preserved during a context switch in RISC-V.
 #[repr(C)]
@@ -41,21 +42,27 @@ pub struct Stack(pub [u8; 16384]);
 #[repr(align(16))]
 pub struct Thread {
     pub tid: usize,
+    pub pid: usize,
     pub state: ThreadState,
     pub context: ThreadContext,
     pub stack: Stack,
     pub satp: usize,
+    pub user_entry: Option<usize>,
+    pub user_sp: Option<usize>,
 }
 
 impl Thread {
     /// Create a new thread.
-    pub fn new(tid: usize, satp: usize) -> Self {
+    pub fn new(tid: usize, satp: usize, pid: usize) -> Self {
         Self {
             tid,
+            pid,
             state: ThreadState::Ready,
             context: ThreadContext::default(),
             stack: Stack([0; 16384]),
             satp,
+            user_entry: None,
+            user_sp: None,
         }
     }
 
@@ -181,15 +188,37 @@ pub fn spawn_thread(entry: fn() -> !) -> Result<usize, &'static str> {
 
 /// Spawn a new thread with a custom satp register value.
 pub fn spawn_thread_with_satp(entry: fn() -> !, satp: usize) -> Result<usize, &'static str> {
-    static mut NEXT_TID: usize = 1;
-    let tid = unsafe {
-        let id = NEXT_TID;
-        NEXT_TID += 1;
-        id
+    static NEXT_TID: AtomicUsize = AtomicUsize::new(1);
+    let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed);
+
+    let thread = Thread::new(tid, satp, 0); // Default PID 0 for kernel threads
+    SCHEDULER.lock().spawn(thread, entry)
+}
+
+fn user_mode_trampoline() -> ! {
+    unsafe {
+        release_lock();
+    }
+
+    let (entry, user_sp) = {
+        let sched = SCHEDULER.lock();
+        let current_idx = sched.current_idx;
+        let thread = sched.threads[current_idx].as_ref().unwrap();
+        (thread.user_entry.unwrap_or(0), thread.user_sp.unwrap_or(0))
     };
 
-    let thread = Thread::new(tid, satp);
-    SCHEDULER.lock().spawn(thread, entry)
+    let kernel_sp: usize;
+    unsafe {
+        core::arch::asm!("mv {}, sp", out(reg) kernel_sp);
+        core::arch::asm!("sfence.vma");
+    }
+    crate::println!(
+        "[THREAD] Entering U-mode: entry=0x{:X} user_sp=0x{:X} kernel_sp=0x{:X}",
+        entry, user_sp, kernel_sp
+    );
+    unsafe {
+        crate::trap::enter_user_mode(entry, user_sp, kernel_sp);
+    }
 }
 
 /// Spawn a kernel thread that transitions to user-mode at `entry_point`.
@@ -199,51 +228,15 @@ pub fn spawn_thread_with_satp(entry: fn() -> !, satp: usize) -> Result<usize, &'
 /// 1. Releases the scheduler lock inherited from the spawner
 /// 2. Flushes the TLB
 /// 3. Calls `trap::enter_user_mode(entry, user_sp, kernel_sp)`
-///
-/// The entry, user stack pointer, and kernel stack top are stored in a static
-/// slot since fn() pointers cannot carry arguments.
-///
-/// # Kernel Stack Top (kernel_sp)
-/// `kernel_sp` is the address of the TOP of this thread's 16KB kernel stack.
-/// It is stored in `sscratch` so that when an ecall or exception fires from
-/// U-mode, the trap vector can swap to this safe kernel stack for TrapFrame
-/// allocation without stomping on kernel text.
-pub fn spawn_user_thread(entry_point: usize, stack_top: usize, satp: usize) -> Result<usize, &'static str> {
-    /// Static triple: (user_entry, user_stack_top, kernel_stack_top)
-    static USER_ENTRY: spin::Mutex<(usize, usize, usize)> = spin::Mutex::new((0, 0, 0));
+pub fn spawn_user_thread(entry_point: usize, stack_top: usize, satp: usize, pid: usize) -> Result<usize, &'static str> {
+    static NEXT_TID: AtomicUsize = AtomicUsize::new(1);
+    let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed);
 
-    // Compute this thread's kernel stack top BEFORE spawning (while we own the data)
-    // The kernel_sp will be set into sscratch by enter_user_mode.
-    // We don't know the thread's stack address yet — it's assigned during spawn.
-    // So we store a sentinel (0) and fill in kernel_sp from the trampoline itself.
-    // The trampoline reads its own stack pointer as a proxy for the thread stack top.
-    *USER_ENTRY.lock() = (entry_point, stack_top, 0 /* filled in trampoline */);
+    let mut thread = Thread::new(tid, satp, pid);
+    thread.user_entry = Some(entry_point);
+    thread.user_sp = Some(stack_top);
 
-    fn user_mode_trampoline() -> ! {
-        unsafe { release_lock(); }
-        let (entry, user_sp, _) = *USER_ENTRY.lock();
-
-        // Capture the current kernel sp as the kernel stack top for sscratch.
-        // Since we just entered this function fresh from context_switch with
-        // sp = thread.context.sp (= thread stack top), sp here is very close
-        // to the stack top — well within the thread's 16KB kernel stack region.
-        let kernel_sp: usize;
-        unsafe {
-            core::arch::asm!("mv {}, sp", out(reg) kernel_sp);
-        }
-
-        // Flush TLB now that the new satp is active
-        unsafe { core::arch::asm!("sfence.vma"); }
-        crate::println!(
-            "[THREAD] Entering U-mode: entry=0x{:X} user_sp=0x{:X} kernel_sp=0x{:X}",
-            entry, user_sp, kernel_sp
-        );
-        unsafe { crate::trap::enter_user_mode(entry, user_sp, kernel_sp); }
-    }
-
-    // Re-use USER_ENTRY lock — must unlock before spawn acquires SCHEDULER
-    // (static mutex is a different lock from SCHEDULER, no deadlock risk)
-    spawn_thread_with_satp(user_mode_trampoline, satp)
+    SCHEDULER.lock().spawn(thread, user_mode_trampoline)
 }
 
 
@@ -286,6 +279,17 @@ pub fn current_tid() -> usize {
     }
 }
 
+/// Get the PID of the currently running thread's process.
+pub fn current_pid() -> usize {
+    let sched = SCHEDULER.lock();
+    let current_idx = sched.current_idx;
+    if let Some(ref curr) = sched.threads[current_idx] {
+        curr.pid
+    } else {
+        0
+    }
+}
+
 /// Initialize the scheduler with the main thread.
 pub fn init() {
     let mut sched = SCHEDULER.lock();
@@ -296,10 +300,13 @@ pub fn init() {
     // Register the current boot context as thread 0 (Running).
     let boot_thread = Thread {
         tid: 0,
+        pid: 1, // boot thread runs the root process (PID 1)
         state: ThreadState::Running,
         context: ThreadContext::default(),
         stack: Stack([0; 16384]), // Dummy stack since we are already using the boot stack
         satp: crate::memory::KERNEL_PAGE_TABLE.lock().satp(),
+        user_entry: None,
+        user_sp: None,
     };
     sched.threads[0] = Some(boot_thread);
     sched.current_idx = 0;

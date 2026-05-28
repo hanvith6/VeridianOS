@@ -16,7 +16,12 @@ use spin::Mutex;
 // Import symbols defined in our linker script (linker.ld)
 unsafe extern "C" {
     fn _free_mem_start();
+    fn _heap_start();
+    fn _heap_end();
 }
+
+#[global_allocator]
+static ALLOCATOR: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
 
 /// The root page table for the kernel.
 pub static KERNEL_PAGE_TABLE: Mutex<PageTable> = Mutex::new(PageTable::new());
@@ -26,6 +31,15 @@ pub static KERNEL_PAGE_TABLE: Mutex<PageTable> = Mutex::new(PageTable::new());
 /// Parameters:
 /// - `_dtb_ptr`: A pointer to the device tree blob describing RAM size.
 pub fn init(_dtb_ptr: usize) {
+    // Initialize the global heap allocator
+    let heap_start = _heap_start as *const () as usize;
+    let heap_end = _heap_end as *const () as usize;
+    let heap_size = heap_end - heap_start;
+    unsafe {
+        ALLOCATOR.lock().init(heap_start as *mut u8, heap_size);
+    }
+    crate::println!("[BOOT MEMORY] Heap initialized: start=0x{:X}, size={} MB", heap_start, heap_size / (1024 * 1024));
+
     // 1. Get the physical starting address for free memory from the linker script symbol.
     let free_mem_start = _free_mem_start as *const () as usize;
     crate::println!("[BOOT MEMORY] free_mem_start = 0x{:X}", free_mem_start);

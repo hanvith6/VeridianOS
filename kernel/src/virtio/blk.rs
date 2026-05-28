@@ -124,21 +124,23 @@ impl VirtioBlkState {
 ///   Used:  4 + 8*8 + 2 = 70 bytes → starts at offset 4096 (second page)
 #[repr(C, align(4096))]
 struct LegacyVirtQueue {
-    data: [u8; 8192],
+    data: core::cell::UnsafeCell<[u8; 8192]>,
 }
 
-static mut VQ_BUF: LegacyVirtQueue = LegacyVirtQueue { data: [0u8; 8192] };
+unsafe impl Sync for LegacyVirtQueue {}
+
+static VQ_BUF: LegacyVirtQueue = LegacyVirtQueue { data: core::cell::UnsafeCell::new([0u8; 8192]) };
 
 unsafe fn desc_table() -> *mut VirtqDesc {
-    unsafe { core::ptr::addr_of_mut!(VQ_BUF.data) as *mut VirtqDesc }
+    unsafe { VQ_BUF.data.get() as *mut VirtqDesc }
 }
 
 unsafe fn avail_ring() -> *mut VirtqAvail {
-    unsafe { (core::ptr::addr_of_mut!(VQ_BUF.data) as usize + 128) as *mut VirtqAvail }
+    unsafe { (VQ_BUF.data.get() as usize + 128) as *mut VirtqAvail }
 }
 
 unsafe fn used_ring() -> *mut VirtqUsed {
-    unsafe { (core::ptr::addr_of_mut!(VQ_BUF.data) as usize + 4096) as *mut VirtqUsed }
+    unsafe { (VQ_BUF.data.get() as usize + 4096) as *mut VirtqUsed }
 }
 
 /// Global singleton VirtIO block driver state (control/metadata only).
@@ -230,7 +232,7 @@ pub fn init() -> Result<u64, &'static str> {
             mmio_write(base, VIRTIO_MMIO_LEGACY_QUEUE_ALIGN, 4096);
 
             // Compute the PFN of our page-aligned VQ_BUF (desc table starts at offset 0)
-            let buf_phys = core::ptr::addr_of!(VQ_BUF.data) as u64;
+            let buf_phys = VQ_BUF.data.get() as u64;
             let pfn = (buf_phys / 4096) as u32;
             crate::println!("[VIRTIO] Legacy PFN: 0x{:X} (phys=0x{:X})", pfn, buf_phys);
             mmio_write(base, VIRTIO_MMIO_LEGACY_QUEUE_PFN, pfn);

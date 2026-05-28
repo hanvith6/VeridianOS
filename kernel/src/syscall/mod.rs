@@ -14,9 +14,8 @@ use crate::println;
 use crate::process::Process;
 use spin::Mutex;
 
-// A simple static process instance representing the currently executing process.
-// Under a real scheduler, this would be updated on context switches.
-pub static CURRENT_PROCESS: Mutex<Option<Process>> = Mutex::new(None);
+// A simple static process instance representing the currently executing process has been removed
+// in favor of process::PROCESS_TABLE and process::with_current_process.
 
 /// Global entry point for system calls.
 ///
@@ -35,6 +34,7 @@ pub fn syscall_handler(
     arg3: usize,
     arg4: usize,
 ) -> isize {
+    #[cfg(debug_assertions)]
     println!("[SYSCALL Debug] id={}, args=(0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}, 0x{:X})", id, arg0, arg1, arg2, arg3, arg4);
     match id {
         numbers::SYS_WRITE => sys_write(arg0, arg1),
@@ -80,11 +80,15 @@ pub fn syscall_handler(
 /// - `str_ptr`: Raw pointer to the string bytes.
 /// - `len`: The length of the string in bytes.
 fn sys_write(str_ptr: usize, len: usize) -> isize {
-    // In a production kernel, we would validate that:
-    // 1. The memory page at str_ptr is mapped in the current process's page table.
-    // 2. The page has read rights.
-    //
-    // For Stage One, we perform a safe cast to a slice of bytes.
+    // Validate that the user process buffer is valid and mapped
+    let valid = crate::process::with_current_process(|proc| {
+        proc.validate_user_buffer(str_ptr, len, false)
+    }).unwrap_or(false);
+
+    if !valid {
+        return -14; // -EFAULT: Bad address
+    }
+
     let slice = unsafe { core::slice::from_raw_parts(str_ptr as *const u8, len) };
 
     if let Ok(s) = core::str::from_utf8(slice) {
@@ -103,8 +107,7 @@ fn sys_exit(status: i32) -> ! {
 
 /// System Call: Close a capability handle.
 fn sys_handle_close(handle_id: usize) -> isize {
-    let mut proc_guard = CURRENT_PROCESS.lock();
-    if let Some(ref mut proc) = *proc_guard {
+    crate::process::with_current_process(|proc| {
         match proc.handle_table.remove(handle_id) {
             Ok(handle) => {
                 println!(
@@ -118,15 +121,12 @@ fn sys_handle_close(handle_id: usize) -> isize {
                 -2 // EBADF: Bad file descriptor/handle
             }
         }
-    } else {
-        -3 // EPERM: No active process
-    }
+    }).unwrap_or(-3) // EPERM: No active process
 }
 
 /// System Call: Duplicate a capability handle.
 fn sys_handle_duplicate(src_handle_id: usize, rights_mask: usize) -> isize {
-    let mut proc_guard = CURRENT_PROCESS.lock();
-    if let Some(ref mut proc) = *proc_guard {
+    crate::process::with_current_process(|proc| {
         // 1. Retrieve the source handle to verify it exists and has DUPLICATE rights.
         let src_handle = match proc.handle_table.get(src_handle_id) {
             Ok(h) => h,
@@ -164,7 +164,5 @@ fn sys_handle_duplicate(src_handle_id: usize, rights_mask: usize) -> isize {
                 -12 // ENOMEM: Out of memory/table slots
             }
         }
-    } else {
-        -3 // EPERM
-    }
+    }).unwrap_or(-3) // EPERM
 }

@@ -13,7 +13,6 @@
 
 use spin::Mutex;
 use crate::println;
-use crate::syscall::CURRENT_PROCESS;
 use crate::capability::channel::{CHANNELS, allocate_channel};
 
 pub type AgentId = u32;
@@ -104,9 +103,17 @@ pub fn init() {
 
 /// SYS_AGENT_SPAWN = 70
 pub fn sys_agent_spawn(parent_id: usize, intent_ptr: usize, intent_len: usize) -> isize {
-    let pid = CURRENT_PROCESS.lock().as_ref().map(|p| p.pid).unwrap_or(0);
+    let pid = crate::process::thread::current_pid();
     
     if intent_ptr == 0 || intent_len == 0 {
+        return -14; // -EFAULT
+    }
+
+    let valid = crate::process::with_current_process(|proc| {
+        proc.validate_user_buffer(intent_ptr, intent_len, false)
+    }).unwrap_or(false);
+
+    if !valid {
         return -14; // -EFAULT
     }
     
@@ -150,6 +157,14 @@ pub fn sys_channel_send(channel_id: usize, payload_ptr: usize, payload_len: usiz
         return -22; // -EINVAL
     }
 
+    let valid = crate::process::with_current_process(|proc| {
+        proc.validate_user_buffer(payload_ptr, MSG_SIZE, false)
+    }).unwrap_or(false);
+
+    if !valid {
+        return -14; // -EFAULT
+    }
+
     let mut buf = [0u8; MSG_SIZE];
     unsafe {
         core::ptr::copy_nonoverlapping(payload_ptr as *const u8, buf.as_mut_ptr(), MSG_SIZE);
@@ -173,6 +188,15 @@ pub fn sys_channel_send(channel_id: usize, payload_ptr: usize, payload_len: usiz
 /// SYS_CHANNEL_RECV = 73
 pub fn sys_channel_recv(channel_id: usize, out_buf_ptr: usize, out_len_ptr: usize) -> isize {
     if out_buf_ptr == 0 || out_len_ptr == 0 {
+        return -14; // -EFAULT
+    }
+
+    let valid = crate::process::with_current_process(|proc| {
+        proc.validate_user_buffer(out_buf_ptr, MSG_SIZE, true)
+            && proc.validate_user_buffer(out_len_ptr, core::mem::size_of::<usize>(), true)
+    }).unwrap_or(false);
+
+    if !valid {
         return -14; // -EFAULT
     }
 
@@ -206,6 +230,14 @@ pub fn sys_channel_recv(channel_id: usize, out_buf_ptr: usize, out_len_ptr: usiz
 /// SYS_AGENT_STATUS = 74
 pub fn sys_agent_status(agent_id: usize, out_state_ptr: usize) -> isize {
     if out_state_ptr == 0 {
+        return -14; // -EFAULT
+    }
+
+    let valid = crate::process::with_current_process(|proc| {
+        proc.validate_user_buffer(out_state_ptr, 1, true)
+    }).unwrap_or(false);
+
+    if !valid {
         return -14; // -EFAULT
     }
 

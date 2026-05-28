@@ -19,6 +19,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 // Include the assembly bootloader stub.
 core::arch::global_asm!(include_str!("arch/riscv64/boot.S"));
 core::arch::global_asm!(include_str!("arch/riscv64/trap.S"));
@@ -175,7 +177,10 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
         handle_id, dummy_vmo_addr
     );
 
-    *syscall::CURRENT_PROCESS.lock() = Some(root_process);
+    {
+        let mut pt = process::PROCESS_TABLE.lock();
+        pt[0] = Some(root_process);
+    }
     println!("[BOOT] Root process active.");
 
     // 6. Syscall smoke-test

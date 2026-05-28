@@ -167,7 +167,7 @@ impl PageTable {
         );
 
         let leaf_entry = unsafe { self.walk_mut(virt_addr, true) }
-            .ok_ok_or("Failed to allocate sub-level page table")?;
+            .ok_or("Failed to allocate sub-level page table")?;
 
         if leaf_entry.is_valid() {
             return Err("Virtual address is already mapped");
@@ -191,7 +191,7 @@ impl PageTable {
         );
 
         let leaf_entry =
-            unsafe { self.walk_mut(virt_addr, false) }.ok_ok_or("Virtual address is not mapped")?;
+            unsafe { self.walk_mut(virt_addr, false) }.ok_or("Virtual address is not mapped")?;
 
         if !leaf_entry.is_valid() {
             return Err("Virtual address is not mapped");
@@ -223,6 +223,7 @@ impl PageTable {
     /// Calculate the satp register value for this page table.
     pub fn satp(&self) -> usize {
         let phys_addr = self as *const PageTable as usize;
+        debug_assert!(phys_addr < 0x8800_0000); // SAFETY: identity mapping assumed
         let ppn = phys_addr / page_alloc::PAGE_SIZE;
         // MODE: Sv39 (8)
         let mode_sv39 = 8usize << 60;
@@ -247,16 +248,3 @@ impl PageTable {
     }
 }
 
-// Simple helper trait to work around standard library Option mapping methods in no_std
-trait OptionExt<T> {
-    fn ok_ok_or(self, err: &'static str) -> Result<T, &'static str>;
-}
-
-impl<T> OptionExt<T> for Option<T> {
-    fn ok_ok_or(self, err: &'static str) -> Result<T, &'static str> {
-        match self {
-            Some(v) => Ok(v),
-            None => Err(err),
-        }
-    }
-}

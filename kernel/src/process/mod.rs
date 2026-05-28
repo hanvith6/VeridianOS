@@ -17,6 +17,25 @@ pub mod thread;
 
 use crate::capability::{HandleTable, Handle, ObjectType, Rights};
 use crate::memory::{alloc_page, PageTable, PageTableFlags, PAGE_SIZE};
+use spin::Mutex;
+
+pub static PROCESS_TABLE: Mutex<[Option<Process>; 16]> = Mutex::new([const { None }; 16]);
+
+pub fn with_current_process<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut Process) -> R,
+{
+    let pid = thread::current_pid();
+    let mut pt = PROCESS_TABLE.lock();
+    for slot in pt.iter_mut() {
+        if let Some(proc) = slot {
+            if proc.pid == pid {
+                return Some(f(proc));
+            }
+        }
+    }
+    None
+}
 
 /// Represents the execution state of a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +93,40 @@ impl Process {
             handle_table,
         }
     }
+
+    /// Validates that a user-supplied buffer `[virt_addr, virt_addr + len)` is entirely
+    /// within user-space, is properly mapped, and has the required page table flags.
+    pub fn validate_user_buffer(&mut self, virt_addr: usize, len: usize, writeable: bool) -> bool {
+        if len == 0 {
+            return true;
+        }
+        // User space is restricted to addresses below 0x8000_0000.
+        if virt_addr >= 0x8000_0000 || virt_addr.checked_add(len).map_or(true, |end| end > 0x8000_0000) {
+            return false;
+        }
+
+        let start_page = virt_addr / PAGE_SIZE;
+        let end_page = (virt_addr + len - 1) / PAGE_SIZE;
+
+        for page in start_page..=end_page {
+            let page_addr = page * PAGE_SIZE;
+            if let Some(entry) = self.page_table.get_entry_mut(page_addr) {
+                if !entry.is_valid() {
+                    return false;
+                }
+                let flags = entry.flags();
+                if !flags.contains(PageTableFlags::USER) {
+                    return false;
+                }
+                if writeable && !flags.contains(PageTableFlags::WRITE) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Spawn a new isolated user-space process from a raw ELF binary blob.
@@ -96,7 +149,9 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
     crate::println!("[PROCESS] Spawning process '{}' ({} bytes ELF)", name, elf_data.len());
 
     // 1. Create a new process with an isolated page table
-    let mut process = Process::new(2); // PID 2 (PID 1 is the root process)
+    static NEXT_PID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(2);
+    let pid = NEXT_PID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let mut process = Process::new(pid);
 
     // 2. Allocate and map the user stack
     //    Stack occupies one page at 0x4000_2000 → 0x4000_3000
@@ -164,12 +219,25 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
     let entry_point = elf::load_elf(elf_data, &mut process.page_table)?;
     crate::println!("[PROCESS] ELF loaded. Entry point: 0x{:X}", entry_point);
 
-    // 4. Capture the satp value *before* moving the process into the global slot
-    //    (taking the lock inside a function argument would deadlock)
-    let satp = process.page_table.satp();
-
-    // 5. Install this process as the current active process
-    *crate::syscall::CURRENT_PROCESS.lock() = Some(process);
+    // 5. Install this process as the current active process and capture satp
+    let pid_val = process.pid;
+    let satp = {
+        let mut pt = PROCESS_TABLE.lock();
+        let mut inserted = false;
+        let mut target_satp = 0;
+        for slot in pt.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(process);
+                target_satp = slot.as_ref().unwrap().page_table.satp();
+                inserted = true;
+                break;
+            }
+        }
+        if !inserted {
+            return Err("spawn: process table full");
+        }
+        target_satp
+    };
 
     // Debug: Check PTE for 0x80219120 in KERNEL_PAGE_TABLE
     {
@@ -182,7 +250,7 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
     }
 
     // 6. Spawn the thread — it will flush the TLB and sret into U-mode
-    let tid = thread::spawn_user_thread(entry_point, user_stack_top, satp)?;
+    let tid = thread::spawn_user_thread(entry_point, user_stack_top, satp, pid_val)?;
 
     crate::println!("[PROCESS] Process '{}' spawned as thread tid={}", name, tid);
 
