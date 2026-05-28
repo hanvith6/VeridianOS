@@ -1,0 +1,339 @@
+//! Thread Context and Scheduler for VeridianOS
+//!
+//! A thread is the basic unit of execution.
+//!
+//! Note: Because the Thread struct contains its own Stack array, moving the Thread
+//! struct in memory changes the physical address of the stack. Therefore, we must
+//! initialize the stack pointer context *after* the thread is moved to its permanent
+//! slot in the scheduler array.
+//!
+//! References:
+//! - RISC-V Privileged Architecture Manual v1.12
+//! - "OS in 1000 Lines" (context switching)
+
+use spin::Mutex;
+
+/// The callee-saved registers that must be preserved during a context switch in RISC-V.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ThreadContext {
+    pub ra: usize,      // Return address
+    pub sp: usize,      // Stack pointer
+    pub s: [usize; 12], // Saved registers s0 - s11
+}
+
+/// Represents the execution state of a thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadState {
+    Ready,
+    Running,
+    Blocked,
+    Exited,
+}
+
+/// A 16-byte aligned stack block for kernel execution.
+/// RISC-V requires 16-byte stack alignment.
+#[repr(align(16))]
+pub struct Stack(pub [u8; 16384]);
+
+/// The main Thread structure.
+#[repr(C)]
+#[repr(align(16))]
+pub struct Thread {
+    pub tid: usize,
+    pub state: ThreadState,
+    pub context: ThreadContext,
+    pub stack: Stack,
+    pub satp: usize,
+}
+
+impl Thread {
+    /// Create a new thread.
+    pub fn new(tid: usize, satp: usize) -> Self {
+        Self {
+            tid,
+            state: ThreadState::Ready,
+            context: ThreadContext::default(),
+            stack: Stack([0; 16384]),
+            satp,
+        }
+    }
+
+    /// Initialize the execution context for this thread.
+    ///
+    /// This must be called *after* the Thread struct is in its final static memory location.
+    pub fn init_context(&mut self, entry: fn() -> !) {
+        let stack_top = &self.stack as *const Stack as usize + 16384;
+        assert!(
+            stack_top.is_multiple_of(16),
+            "Stack top must be 16-byte aligned"
+        );
+
+        self.context.sp = stack_top;
+        self.context.ra = entry as usize;
+    }
+}
+
+// External assembly function to switch CPU execution context between two threads.
+unsafe extern "C" {
+    fn switch_context(current: *mut ThreadContext, next: *const ThreadContext);
+}
+
+/// The maximum number of threads the scheduler can manage.
+pub const MAX_THREADS: usize = 16;
+
+/// Scheduler state.
+struct SchedulerState {
+    threads: [Option<Thread>; MAX_THREADS],
+    current_idx: usize,
+}
+
+impl SchedulerState {
+    const fn new() -> Self {
+        Self {
+            threads: [const { None }; MAX_THREADS],
+            current_idx: 0,
+        }
+    }
+
+    /// Add a thread to the scheduler queue and initialize its entry context.
+    fn spawn(&mut self, thread: Thread, entry: fn() -> !) -> Result<usize, &'static str> {
+        for (idx, slot) in self.threads.iter_mut().enumerate() {
+            if slot.is_none() {
+                // Place in the slot first
+                *slot = Some(thread);
+                // Now get a mutable reference to the moved struct to initialize its context
+                if let Some(t) = slot {
+                    t.init_context(entry);
+                    crate::println!(
+                        "[BOOT] Thread context initialized: tid={}, sp=0x{:X}, ra=0x{:X}",
+                        t.tid,
+                        t.context.sp,
+                        t.context.ra
+                    );
+                }
+                return Ok(idx);
+            }
+        }
+        Err("Thread queue is full")
+    }
+
+    /// Run the Round-Robin scheduler to switch to the next ready thread.
+    fn schedule(&mut self) {
+        let mut next_idx = self.current_idx;
+
+        // Find the next thread that is in the Ready state
+        loop {
+            next_idx = (next_idx + 1) % MAX_THREADS;
+            if let Some(ref t) = self.threads[next_idx]
+                && t.state == ThreadState::Ready
+            {
+                break;
+            }
+            // If we looped back to current and nothing else is ready, do nothing
+            if next_idx == self.current_idx {
+                return;
+            }
+        }
+
+        let current_ptr = &mut self.threads[self.current_idx] as *mut Option<Thread>;
+        let next_ptr = &mut self.threads[next_idx] as *mut Option<Thread>;
+
+        unsafe {
+            let current_opt = &mut *current_ptr;
+            let next_opt = &mut *next_ptr;
+
+            if let (Some(curr), Some(next)) = (current_opt, next_opt) {
+                if curr.state == ThreadState::Running {
+                    curr.state = ThreadState::Ready;
+                }
+                next.state = ThreadState::Running;
+                self.current_idx = next_idx;
+
+                // Commented out to prevent deadlocking on uart::WRITER during preemptive scheduling
+                /*
+                crate::println!(
+                    "[SCHED] Switching context: current_ctx=0x{:X}, next_ctx=0x{:X}",
+                    &mut curr.context as *mut _ as usize,
+                    &next.context as *const _ as usize
+                );
+                */
+
+                // Switch page tables to the target thread's address space
+                let next_satp = next.satp;
+                core::arch::asm!("csrw satp, {}", in(reg) next_satp);
+                core::arch::asm!("sfence.vma");
+
+                // Perform the physical register swap
+                switch_context(&mut curr.context, &next.context);
+            }
+        }
+    }
+}
+
+static SCHEDULER: Mutex<SchedulerState> = Mutex::new(SchedulerState::new());
+
+/// Spawn a new thread with default kernel page table.
+pub fn spawn_thread(entry: fn() -> !) -> Result<usize, &'static str> {
+    let satp = crate::memory::KERNEL_PAGE_TABLE.lock().satp();
+    spawn_thread_with_satp(entry, satp)
+}
+
+/// Spawn a new thread with a custom satp register value.
+pub fn spawn_thread_with_satp(entry: fn() -> !, satp: usize) -> Result<usize, &'static str> {
+    static mut NEXT_TID: usize = 1;
+    let tid = unsafe {
+        let id = NEXT_TID;
+        NEXT_TID += 1;
+        id
+    };
+
+    let thread = Thread::new(tid, satp);
+    SCHEDULER.lock().spawn(thread, entry)
+}
+
+/// Spawn a kernel thread that transitions to user-mode at `entry_point`.
+///
+/// Used by `process::spawn()` to launch a new user process. The thread
+/// runs a small kernel trampoline that:
+/// 1. Releases the scheduler lock inherited from the spawner
+/// 2. Flushes the TLB
+/// 3. Calls `trap::enter_user_mode(entry, user_sp, kernel_sp)`
+///
+/// The entry, user stack pointer, and kernel stack top are stored in a static
+/// slot since fn() pointers cannot carry arguments.
+///
+/// # Kernel Stack Top (kernel_sp)
+/// `kernel_sp` is the address of the TOP of this thread's 16KB kernel stack.
+/// It is stored in `sscratch` so that when an ecall or exception fires from
+/// U-mode, the trap vector can swap to this safe kernel stack for TrapFrame
+/// allocation without stomping on kernel text.
+pub fn spawn_user_thread(entry_point: usize, stack_top: usize, satp: usize) -> Result<usize, &'static str> {
+    /// Static triple: (user_entry, user_stack_top, kernel_stack_top)
+    static USER_ENTRY: spin::Mutex<(usize, usize, usize)> = spin::Mutex::new((0, 0, 0));
+
+    // Compute this thread's kernel stack top BEFORE spawning (while we own the data)
+    // The kernel_sp will be set into sscratch by enter_user_mode.
+    // We don't know the thread's stack address yet — it's assigned during spawn.
+    // So we store a sentinel (0) and fill in kernel_sp from the trampoline itself.
+    // The trampoline reads its own stack pointer as a proxy for the thread stack top.
+    *USER_ENTRY.lock() = (entry_point, stack_top, 0 /* filled in trampoline */);
+
+    fn user_mode_trampoline() -> ! {
+        unsafe { release_lock(); }
+        let (entry, user_sp, _) = *USER_ENTRY.lock();
+
+        // Capture the current kernel sp as the kernel stack top for sscratch.
+        // Since we just entered this function fresh from context_switch with
+        // sp = thread.context.sp (= thread stack top), sp here is very close
+        // to the stack top — well within the thread's 16KB kernel stack region.
+        let kernel_sp: usize;
+        unsafe {
+            core::arch::asm!("mv {}, sp", out(reg) kernel_sp);
+        }
+
+        // Flush TLB now that the new satp is active
+        unsafe { core::arch::asm!("sfence.vma"); }
+        crate::println!(
+            "[THREAD] Entering U-mode: entry=0x{:X} user_sp=0x{:X} kernel_sp=0x{:X}",
+            entry, user_sp, kernel_sp
+        );
+        unsafe { crate::trap::enter_user_mode(entry, user_sp, kernel_sp); }
+    }
+
+    // Re-use USER_ENTRY lock — must unlock before spawn acquires SCHEDULER
+    // (static mutex is a different lock from SCHEDULER, no deadlock risk)
+    spawn_thread_with_satp(user_mode_trampoline, satp)
+}
+
+
+/// Yield execution to the next thread.
+pub fn schedule() {
+    SCHEDULER.lock().schedule();
+}
+
+/// Block the current thread and yield execution.
+pub fn block_current_thread() {
+    {
+        let mut sched = SCHEDULER.lock();
+        let current_idx = sched.current_idx;
+        if let Some(ref mut curr) = sched.threads[current_idx] {
+            curr.state = ThreadState::Blocked;
+        }
+    }
+    schedule();
+}
+
+/// Wake up a thread by its ID, marking it ready.
+pub fn wakeup_thread(tid: usize) {
+    let mut sched = SCHEDULER.lock();
+    for t in sched.threads.iter_mut().flatten() {
+        if t.tid == tid && t.state == ThreadState::Blocked {
+            t.state = ThreadState::Ready;
+            break;
+        }
+    }
+}
+
+/// Get the TID of the currently running thread.
+pub fn current_tid() -> usize {
+    let sched = SCHEDULER.lock();
+    let current_idx = sched.current_idx;
+    if let Some(ref curr) = sched.threads[current_idx] {
+        curr.tid
+    } else {
+        0
+    }
+}
+
+/// Initialize the scheduler with the main thread.
+pub fn init() {
+    let mut sched = SCHEDULER.lock();
+    crate::println!("[DEBUG] SCHEDULER address: 0x{:X}", &raw const SCHEDULER as usize);
+    crate::println!("[DEBUG] SCHEDULER.threads address: 0x{:X}", &raw const sched.threads as usize);
+    crate::println!("[DEBUG] SCHEDULER.threads[0] address: 0x{:X}", &raw const sched.threads[0] as usize);
+    crate::println!("[DEBUG] SCHEDULER.threads[1] address: 0x{:X}", &raw const sched.threads[1] as usize);
+    // Register the current boot context as thread 0 (Running).
+    let boot_thread = Thread {
+        tid: 0,
+        state: ThreadState::Running,
+        context: ThreadContext::default(),
+        stack: Stack([0; 16384]), // Dummy stack since we are already using the boot stack
+        satp: crate::memory::KERNEL_PAGE_TABLE.lock().satp(),
+    };
+    sched.threads[0] = Some(boot_thread);
+    sched.current_idx = 0;
+}
+
+/// Forcefully release the scheduler lock.
+/// This must be called at the start of every newly spawned thread.
+///
+/// # Safety
+///
+/// This is unsafe because it forcefully unlocks a spinlock, which should only be done
+/// once when spawning a new thread context to release the lock held by the spawning thread.
+pub unsafe fn release_lock() {
+    unsafe {
+        SCHEDULER.force_unlock();
+    }
+}
+
+/// Terminate execution of the current thread and schedule the next one.
+pub fn exit_current_thread() -> ! {
+    {
+        let mut sched = SCHEDULER.lock();
+        let current_idx = sched.current_idx;
+        if let Some(ref mut curr) = sched.threads[current_idx] {
+            curr.state = ThreadState::Exited;
+            crate::println!("[SCHED] Thread {} exited.", curr.tid);
+        }
+    }
+    // Yield execution to the next ready thread
+    schedule();
+    // If there are no other threads, halt
+    loop {
+        unsafe {
+            core::arch::asm!("wfi");
+        }
+    }
+}
