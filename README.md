@@ -46,9 +46,12 @@ The **Neural Execution Subsystem (NES)** schedules complex Directed Acyclic Grap
 
 ### 5. <img src="docs/assets/icons/distributed.svg" width="18" height="18" style="vertical-align: middle; margin-right: 6px;" /> Distributed Multi-Kernel Coherence (Phase 11)
 VeridianOS establishes cluster coherence across multiple physical nodes or virtual hardware harts via the **Distributed Kernel Coherence Protocol (DKCP)**:
-* **Lock-Free Atomic SPSC Ring Buffers** (`DkcpRing`) facilitate fast inter-hart transport.
-* **Distributed Capability Transfer Protocol (DCTP)** securely shares, tracks, and revokes handles across machine boundaries.
-* **S-Mode Raft Consensus Engine** replicates Semantic Graph Filesystem (SGF) structural updates across the cluster.
+* **Lock-Free Atomic SPSC Ring Buffers** (`DkcpRing`, 256 × 64-byte slots, cache-line aligned) facilitate fast inter-hart transport with `write_volatile` / `read_volatile` ordering and atomic head/tail.
+* **Cluster Membership** (`ClusterState`) tracks up to 8 `KernelDomainId` peers with per-domain liveness epoch counters. Domains are declared `Dead` after 5 missed heartbeat ticks; `Hello` and `Heartbeat` messages refresh liveness on arrival.
+* **Distributed Capability Transfer Protocol (DCTP)** exports handles as 128-bit UIDs (derived from `rdtime`, domain, and a monotonic counter), maintains a `DistCapTable`, and propagates epoch-based revocation via `CapRevokeNotify` messages.
+* **Remote NES Node Dispatch** uses a 16-slot `DistTicket` pool. `dispatch_node` sends a `GraphNodeDispatch` message and injects a synthetic `GraphNodeResult` on the loopback ring for QEMU single-instance verification. `wait_remote` polls with an `rdtime`-based timeout.
+* **S-Mode Raft Consensus Engine** — a complete Raft state machine (Follower → Candidate → Leader). A single-node cluster wins quorum immediately on boot; `append_entry` commits `SemanticGraphMutation` records to a 128-slot static log and broadcasts `AppendEntries` on the DKCP ring.
+* **Syscalls 90–101** are all fully implemented (no stubs): domain join/list/status, remote NES dispatch/wait/abort, cap export/import/revoke, SGF replicate enable/query, and Raft status.
 
 ---
 

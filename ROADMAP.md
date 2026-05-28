@@ -43,9 +43,12 @@ This document outlines the design and implementation phases of **VeridianOS**, a
 ### Phase 11: Multi-Kernel Clustered System
 * **Goal:** Share capabilities and filesystem state across physical computers/harts.
 * **Mechanisms:**
-  - **DKCP (Distributed Kernel Coherence Protocol):** Low-latency data sync.
-  - **DCTP (Distributed Capability Transfer Protocol):** Safe sharing of handle permissions across nodes.
-  - **Consensus:** A custom supervisor-level Raft consensus engine handles linearizable metadata replication.
+  - **DKCP (Distributed Kernel Coherence Protocol):** Atomic SPSC ring transport (64-byte cache-line messages, lock-free enqueue/dequeue) with loopback simulation in QEMU.
+  - **Cluster Membership:** `ClusterState` tracks up to 8 `KernelDomainId` peers with per-domain liveness epoch counters; domains declared Dead after 5 missed heartbeat ticks.
+  - **DCTP (Distributed Capability Transfer Protocol):** Cap export derives a 128-bit UID from rdtime + domain + handle; shadow Handles installed into remote process tables on import; epoch-based revocation propagated via `CapRevokeNotify`.
+  - **Remote NES Dispatch:** `DistTicket` pool tracks 16 in-flight remote graph nodes; loopback immediately injects synthetic `GraphNodeResult` for QEMU single-instance verification; `wait_remote` uses rdtime-based timeout.
+  - **Raft Consensus Engine:** Complete Raft state machine (Follower → Candidate → Leader) replicated over the DKCP ring; single-node cluster wins quorum immediately; `append_entry` commits `SemanticGraphMutation` records to a 128-slot static log.
+  - **Syscalls 90–101** fully wired to real implementations (no stubs).
 
 ---
 
