@@ -36,6 +36,9 @@ _start:
     # ---------------------------------------------------------------
     la      sp, _stack_top
 
+    # Skip _secondary_start — boot hart goes straight to BSS + kmain.
+    j       _boot_hart_init
+
 .globl _secondary_start
 _secondary_start:
     # Save hart ID in thread pointer register (tp)
@@ -53,6 +56,7 @@ _secondary_park:
     wfi
     j       _secondary_park
 
+_boot_hart_init:
     # ---------------------------------------------------------------
     # Zero out BSS section
     # BSS contains uninitialized globals that must be zeroed
