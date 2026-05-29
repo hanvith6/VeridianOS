@@ -280,6 +280,19 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
             println!("[VIRTIO] No legacy ELF fallback in Phase 11. Run `make disk` to rebuild disk.img.");
         }
     }
+
+    // 7e. Initialize VirtIO network device
+    match virtio::net::init() {
+        Ok(_) => {
+            println!("[VIRTIO] Net device ready.");
+            *crate::dist::transport::ACTIVE_TRANSPORT.lock() = &crate::dist::transport::VirtioNetTransport;
+            println!("[BOOT] DKCP active transport switched to VirtioNetTransport.");
+        }
+        Err(e) => {
+            println!("[VIRTIO] Net device initialization failed: {}", e);
+        }
+    }
+
     println!("=== [PHASE 6 INIT COMPLETE] ===\n");
 
     // -----------------------------------------------------------------------

@@ -356,11 +356,15 @@ pub fn init() {
     crate::println!("[DEBUG] SCHEDULER.threads address: 0x{:X}", &raw const sched.threads as usize);
     crate::println!("[DEBUG] SCHEDULER.threads[0] address: 0x{:X}", &raw const sched.threads[0] as usize);
     crate::println!("[DEBUG] SCHEDULER.threads[1] address: 0x{:X}", &raw const sched.threads[1] as usize);
-    // Register the current boot context as thread 0 (Running on hart 0).
+    
+    let boot_hart_id = get_hart_id();
+    crate::println!("[BOOT] Scheduler initializing. Boot hart ID: {}", boot_hart_id);
+
+    // Register the current boot context as thread 0 (Running on the boot hart).
     let boot_thread = Thread {
         tid: 0,
         pid: 1, // boot thread runs the root process (PID 1)
-        state: ThreadState::Running(0),
+        state: ThreadState::Running(boot_hart_id),
         context: ThreadContext::default(),
         stack: None, // Dummy stack since we are already using the boot stack
         satp: crate::memory::KERNEL_PAGE_TABLE.lock().satp(),
@@ -369,10 +373,13 @@ pub fn init() {
         saved_user_context: None,
     };
     sched.threads[0] = Some(boot_thread);
-    sched.current_idx[0] = 0;
+    sched.current_idx[boot_hart_id] = 0;
 
-    // Register dummy threads for secondary harts 1, 2, 3 in slots 1, 2, 3
-    for hart_id in 1..4 {
+    // Register dummy threads for secondary harts in slots 1, 2, 3
+    for hart_id in 0..4 {
+        if hart_id == boot_hart_id {
+            continue;
+        }
         let dummy_thread = Thread {
             tid: 0x100 + hart_id,
             pid: 0,
@@ -384,8 +391,10 @@ pub fn init() {
             user_sp: None,
             saved_user_context: None,
         };
-        sched.threads[hart_id] = Some(dummy_thread);
-        sched.current_idx[hart_id] = hart_id;
+        // Use slot 'hart_id' if hart_id != 0, else use 'boot_hart_id' slot (since slot 0 is taken by boot thread)
+        let slot = if hart_id == 0 { boot_hart_id } else { hart_id };
+        sched.threads[slot] = Some(dummy_thread);
+        sched.current_idx[hart_id] = slot;
     }
 }
 

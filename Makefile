@@ -10,10 +10,6 @@ all: disk
 
 # --- Build Targets ---
 
-# Build the user_program (legacy inline ELF, kept for compatibility)
-build_user_program:
-	cargo build -p user_program --release
-
 # Build the hello user-space process for the disk image
 build_hello:
 	cargo build -p hello --release
@@ -38,8 +34,8 @@ build_policy_test:
 build_smp_test:
 	cargo build -p smp_test --release
 
-# Build the kernel (depends on user_program for include_bytes! path)
-build_kernel: build_user_program
+# Build the kernel
+build_kernel:
 	cargo build -p veridian-kernel --release
 
 # Full build: everything including disk image

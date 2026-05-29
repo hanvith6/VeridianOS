@@ -42,7 +42,7 @@ trap_vector:
 .save_remaining:
     # Save general purpose registers x3-x31
     sd x3, 24(sp)
-    sd x4, 32(sp)
+    # sd x4, 32(sp)
     sd x5, 40(sp)
     sd x6, 48(sp)
     sd x7, 56(sp)
@@ -111,7 +111,7 @@ trap_vector:
     # Restore general purpose registers x1, x3-x31
     ld x1, 8(sp)
     ld x3, 24(sp)
-    ld x4, 32(sp)
+    # ld x4, 32(sp)
     ld x5, 40(sp)
     ld x6, 48(sp)
     ld x7, 56(sp)

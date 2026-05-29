@@ -34,6 +34,12 @@ where
             }
         }
     }
+    crate::println!("[with_current_process debug] PROCESS NOT FOUND for pid: {}! Active processes:", pid);
+    for (i, slot) in pt.iter().enumerate() {
+        if let Some(proc) = slot {
+            crate::println!("  slot[{}]: pid={}", i, proc.pid);
+        }
+    }
     None
 }
 
@@ -172,16 +178,20 @@ impl Process {
             let page_addr = page * PAGE_SIZE;
             if let Some(entry) = self.page_table.get_entry_mut(page_addr) {
                 if !entry.is_valid() {
+                    crate::println!("[validate_user_buffer debug] page 0x{:X} entry is invalid!", page_addr);
                     return false;
                 }
                 let flags = entry.flags();
                 if !flags.contains(PageTableFlags::USER) {
+                    crate::println!("[validate_user_buffer debug] page 0x{:X} flags {:?} do not contain USER!", page_addr, flags);
                     return false;
                 }
                 if writeable && !flags.contains(PageTableFlags::WRITE) {
+                    crate::println!("[validate_user_buffer debug] page 0x{:X} writeable requested but flags {:?} do not contain WRITE!", page_addr, flags);
                     return false;
                 }
             } else {
+                crate::println!("[validate_user_buffer debug] page 0x{:X} entry mut not found!", page_addr);
                 return false;
             }
         }
@@ -212,9 +222,6 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
     static NEXT_PID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(2);
     let pid = NEXT_PID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let mut process = Process::new(pid);
-
-    // 2. Allocate and map the user stack
-    let (_user_stack_virt, user_stack_top) = process.alloc_stack()?;
 
     if name == "neural_test" || name == "policy_test" {
         // Insert DeviceQueue capability at handle 4
@@ -258,9 +265,14 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
         }
     }
 
-    // 3. Load the ELF binary — maps all PT_LOAD segments into the process page table
+    // 2. Load the ELF binary first so alloc_stack() knows which VAs are taken
     let entry_point = elf::load_elf(elf_data, &mut process.page_table)?;
     crate::println!("[PROCESS] ELF loaded. Entry point: 0x{:X}", entry_point);
+
+    // 3. Allocate stack AFTER ELF is mapped — prevents stack VA from landing
+    //    in the same Sv39 L0 subtree as a PT_LOAD segment (which caused
+    //    a Store/AMO page fault at U-mode entry when ASLR gave small offsets).
+    let (_user_stack_virt, user_stack_top) = process.alloc_stack()?;
 
     // 5. Install this process as the current active process and capture satp
     let pid_val = process.pid;

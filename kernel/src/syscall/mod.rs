@@ -103,6 +103,7 @@ fn sys_write(str_ptr: usize, len: usize) -> isize {
     }).unwrap_or(false);
 
     if !valid {
+        crate::println!("[SYSCALL Debug] sys_write validation failed: str_ptr=0x{:X}, len={}", str_ptr, len);
         return -14; // -EFAULT: Bad address
     }
 

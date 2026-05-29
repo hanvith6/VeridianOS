@@ -131,7 +131,7 @@ pub extern "C" fn _start(hart_id: usize, dtb_ptr: usize) -> ! {
 
     // 1. Set mtvec to our trap handler (direct mode, bit 0 = 0).
     //    All M-mode exceptions and interrupts vector here.
-    csr_write!("mtvec", m_trap_vector as usize);
+    csr_write!("mtvec", m_trap_vector as *const () as usize);
 
     // 2. Lock the monitor's own memory with PMP entry 15 (highest priority).
     //    Monitor image lives at [0x80000000, 0x80040000) — 256 KiB.

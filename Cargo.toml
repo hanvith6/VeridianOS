@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "kernel",
     "monitor",
-    "user_program",
     "user_programs/hello",
     "user_programs/neural_test",
     "user_programs/semantic_test",

@@ -71,20 +71,18 @@ fn fail(msg: &str) -> ! {
 
 fn print_hex(label: &str, val: usize) {
     print(label);
-    let mut buf = [b'0'; 18]; // "0x" + 16 hex digits
-    buf[0] = b'0';
-    buf[1] = b'x';
+    print("0x");
+    let mut buf = [b'0'; 16]; // 16 hex digits
     let hex = b"0123456789abcdef";
     for i in 0..16 {
-        buf[17 - i] = hex[(val >> (i * 4)) & 0xF];
+        buf[15 - i] = hex[(val >> (i * 4)) & 0xF];
     }
-    // Trim leading zeros but keep at least one digit after "0x"
-    let digits = &buf[2..];
+    // Trim leading zeros but keep at least one digit
     let mut start = 0usize;
-    while start < 15 && digits[start] == b'0' {
+    while start < 15 && buf[start] == b'0' {
         start += 1;
     }
-    let slice = &buf[0..2 + (16 - start)]; // "0x" + trimmed digits
+    let slice = &buf[start..];
     // SAFETY: all bytes are ASCII
     let s = unsafe { core::str::from_utf8_unchecked(slice) };
     print(s);

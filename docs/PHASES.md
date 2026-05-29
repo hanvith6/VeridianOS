@@ -18,6 +18,9 @@ This document provides a complete, structured description of every implementatio
 | 8 | Semantic Knowledge Graph Filesystem | ✅ Complete | `semantic_test` |
 | 9 | Agent Runtime | ✅ Complete | `agent_test` |
 | 10 | Self-Improving Kernel Policies | ✅ Complete | `policy_test` |
+| 11 | Distributed Multi-Kernel Coherence | ✅ Complete | `policy_test` (syscalls 90–101) |
+| 11.5 | SMP + User-Space Exception Delivery | ✅ Complete | `smp_test` |
+| 12 | M-Mode TEE Security Monitor | 🔄 In Progress | _(enclave_test — pending)_ |
 
 ---
 
@@ -366,3 +369,110 @@ An online reinforcement learning policy engine embedded in the kernel's NES sche
 - **ε-Greedy**: Sutton & Barto, *Reinforcement Learning: An Introduction* (2018), §2.2. The exploration parameter ε prevents the policy from getting permanently stuck on a suboptimal device due to noise in early observations.
 - **Exponential Moving Average**: α=0.2 gives a recency-weighted estimate with an effective window of ~5 observations. Lower α → slower adaptation to change (more stable). Higher α → faster adaptation (more volatile).
 - **Queue-Depth Penalty**: The wait cost term approximates the M/M/1 queue waiting time proportionally, providing implicit load balancing without full queue-theoretic modeling.
+
+---
+
+## Phase 11: Distributed Multi-Kernel Coherence
+
+**Status**: ✅ Complete
+
+### What Was Built
+A full distributed kernel layer enabling multiple VeridianOS instances to share capabilities, schedule NES tasks across nodes, and agree on global state via Raft consensus. The loopback transport makes everything testable in a single QEMU instance; the virtio-net driver extends the same stack to real multi-VM networking.
+
+### Key Files Created/Modified
+| File | Purpose |
+|------|---------|
+| `kernel/src/dkcp/ring.rs` | Lock-free SPSC ring buffer — 256 slots × 64 bytes each |
+| `kernel/src/dkcp/dctp.rs` | Distributed Capability Transfer Protocol: export / import / revoke with 128-bit global UIDs |
+| `kernel/src/dkcp/raft.rs` | Raft consensus engine: Leader / Follower / Candidate state machine, AppendEntries RPC, election timeouts |
+| `kernel/src/nes/nes_dist.rs` | Remote NES node dispatch — `TicketPool` with 16 in-flight slots |
+| `kernel/src/virtio/net.rs` | VirtIO-net driver for real inter-VM networking |
+| `kernel/src/syscall/numbers.rs` | Syscalls 90–101 wired to real implementations |
+
+### Key Syscalls Added
+| ID | Name | Description |
+|----|------|-------------|
+| `90` | `SYS_DCAP_EXPORT` | Export a local capability to a remote node, returns 128-bit global UID |
+| `91` | `SYS_DCAP_IMPORT` | Import a capability from a remote node by global UID |
+| `92` | `SYS_DCAP_REVOKE` | Revoke a previously exported capability globally |
+| `93` | `SYS_RAFT_PROPOSE` | Submit an entry to the Raft log (leader forwards if Follower) |
+| `94` | `SYS_RAFT_READ` | Linearizable read from the Raft state machine |
+| `95` | `SYS_RAFT_STATUS` | Query current Raft role (Leader / Follower / Candidate) and term |
+| `96` | `SYS_NES_DIST_SUBMIT` | Submit a TaskGraph to a remote NES node via TicketPool |
+| `97` | `SYS_NES_DIST_WAIT` | Wait for a remote NES ticket to complete |
+| `98` | `SYS_NET_SEND` | Send a raw packet via virtio-net |
+| `99` | `SYS_NET_RECV` | Receive a raw packet from virtio-net |
+| `100` | `SYS_DKCP_CONNECT` | Establish a DKCP session to a remote node |
+| `101` | `SYS_DKCP_DISCONNECT` | Tear down a DKCP session |
+
+### What Was Proven Working
+- `policy_test` exercises syscalls 90–101; all return success codes.
+- Loopback transport confirms DCTP export / import / revoke round-trip on a single QEMU instance.
+- Raft state machine transitions correctly between Leader, Follower, and Candidate on election timeout.
+- Remote NES dispatch completes in-flight tickets without deadlock (TicketPool 16 slots, SPSC ring 256 slots).
+
+---
+
+## Phase 11.5: SMP + User-Space Exception Delivery
+
+**Status**: ✅ Complete
+
+### What Was Built
+Symmetric multi-processing across all four RISC-V harts and a user-space exception delivery mechanism that routes page faults to a registered user handler instead of terminating the process.
+
+### Key Files Created/Modified
+| File | Purpose |
+|------|---------|
+| `kernel/src/smp.rs` | SBI HSM `sbi_hart_start` calls to wake harts 1–3 |
+| `kernel/src/process/scheduler.rs` | Per-hart scheduler: `current_idx[4]`, `ThreadState::Running(hart_id)` |
+| `kernel/src/trap.rs` | Page fault path: dispatch to registered user handler, save / restore `TrapFrame` |
+| `kernel/src/syscall/numbers.rs` | Syscalls 110–111 |
+| `user_programs/smp_test/` | Verification binary — confirms all four harts schedule concurrently |
+
+### Key Syscalls Added
+| ID | Name | Description |
+|----|------|-------------|
+| `110` | `SYS_REGISTER_EXCEPTION_HANDLER` | Register a U-mode function pointer as the page-fault handler for the calling process |
+| `111` | `SYS_EXCEPTION_RETURN` | Return from a user-space exception handler, restoring the saved `TrapFrame` |
+
+### What Was Proven Working
+- Secondary harts 1–3 wake via `sbi_hart_start` and enter the per-hart scheduler loop.
+- `current_idx[hart_id]` tracks independent thread indices per hart with no data races.
+- Page fault on a mapped-but-not-resident address dispatches to the registered U-mode handler.
+- Handler returns via `SYS_EXCEPTION_RETURN`; kernel restores the original `TrapFrame` and resumes execution.
+- `smp_test` binary confirms all four harts complete work and exit cleanly.
+
+---
+
+## Phase 12: M-Mode TEE Security Monitor
+
+**Status**: 🔄 In Progress
+
+### What Is Being Built
+A separate M-mode security monitor crate (`monitor/`) that implements a Trusted Execution Environment using RISC-V Physical Memory Protection. Enclaves run in isolated PMP regions; the S-mode kernel interacts with the monitor exclusively via a custom SBI extension.
+
+### Key Files In Progress
+| File | Purpose |
+|------|---------|
+| `monitor/src/lib.rs` | M-mode crate root — runs before OpenSBI hands off to S-mode |
+| `monitor/src/pmp.rs` | PMP configuration — 16 entries, one per enclave region |
+| `monitor/src/enclave.rs` | `EnclaveRecord` pool, lifecycle state machine (Created / Running / Exited) |
+| `monitor/src/attest.rs` | SHA-256 measurement + HMAC-SHA-256 attestation (hand-rolled, `no_std`, no external crypto crate) |
+| `monitor/src/sbi_ext.rs` | SBI extension EID `0x08424B45`: `enclave_create` / `enter` / `exit` / `attest` |
+| `kernel/src/enclave_bridge.rs` | S-mode shim — translates kernel syscalls 120–123 into SBI ecalls to the monitor |
+| `kernel/src/agent/mod.rs` | `AgentRecord` extended with `enclave_id: Option<u32>` field |
+| `kernel/src/syscall/numbers.rs` | Syscalls 120–123 |
+
+### Key Syscalls Added
+| ID | Name | Description |
+|----|------|-------------|
+| `120` | `SYS_ENCLAVE_CREATE` | Request the M-mode monitor to allocate a PMP-isolated enclave region |
+| `121` | `SYS_ENCLAVE_ENTER` | Transfer execution into an enclave (monitor sets PMP, switches to enclave stack) |
+| `122` | `SYS_ENCLAVE_EXIT` | Exit the enclave and return to S-mode; monitor clears PMP entry |
+| `123` | `SYS_ENCLAVE_ATTEST` | Request a SHA-256 + HMAC-SHA-256 attestation report for an enclave |
+
+### Design Notes
+- The `monitor/` crate compiles as a separate binary linked at a distinct physical address below the S-mode kernel.
+- PMP entries are configured at M-mode so the S-mode kernel itself cannot read enclave memory.
+- Attestation uses a hand-rolled `no_std` SHA-256 and HMAC-SHA-256 to avoid pulling in external crypto crates.
+- `AgentRecord.enclave_id` allows the agent runtime to associate an agent with its hardware-isolated computation context.

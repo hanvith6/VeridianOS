@@ -134,6 +134,10 @@ impl PageTable {
                 }
                 // Allocate a new physical page for the next level page table
                 let new_page_addr = page_alloc::alloc_page()?;
+                // Zero the page table page to avoid using garbage mappings.
+                unsafe {
+                    core::ptr::write_bytes(new_page_addr as *mut u8, 0, page_alloc::PAGE_SIZE);
+                }
                 // Set the page table entry to point to this new table
                 entry.set(new_page_addr, PageTableFlags::VALID);
 
