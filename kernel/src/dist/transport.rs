@@ -53,9 +53,13 @@ impl DkcpTransport for VirtioNetTransport {
         // EtherType: 0x88B5
         frame[12..14].copy_from_slice(&[0x88, 0xB5]);
         
-        // Payload: DkcpMessage (64 bytes)
+        // Payload: DkcpMessage — use actual struct size to prevent OOB read.
+        const _: () = assert!(core::mem::size_of::<DkcpMessage>() == 64,
+            "DkcpMessage must be exactly 64 bytes for wire format compatibility");
+        // SAFETY: DkcpMessage is repr(C), size confirmed above, alignment >= u8.
         let msg_bytes = unsafe {
-            core::slice::from_raw_parts(msg as *const _ as *const u8, 64)
+            core::slice::from_raw_parts(msg as *const _ as *const u8,
+                                        core::mem::size_of::<DkcpMessage>())
         };
         frame[14..78].copy_from_slice(msg_bytes);
         

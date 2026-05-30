@@ -345,9 +345,22 @@ struct FdtHeader {
     size_dt_struct: u32,
 }
 
+// Static buffer for the init= argument extracted from the DTB bootargs.
+// Copying here eliminates the transmute-to-'static lifetime hazard: the DTB
+// blob lives in memory that the page allocator may later reclaim, so any
+// reference into it would become dangling after the allocator starts.
+static mut BOOTARGS_BUF: [u8; 64] = [0u8; 64];
+static mut BOOTARGS_LEN: usize = 0;
+
 fn parse_bootargs(dtb_ptr: usize) -> Option<&'static str> {
     if dtb_ptr == 0 {
         return None;
+    }
+
+    // SAFETY: dtb_ptr is provided by OpenSBI/QEMU in a1 register; we validate
+    // alignment and magic before any further reads.
+    if dtb_ptr & 3 != 0 {
+        return None; // FDT headers are always 4-byte aligned
     }
 
     let header = unsafe { &*(dtb_ptr as *const FdtHeader) };
@@ -356,43 +369,73 @@ fn parse_bootargs(dtb_ptr: usize) -> Option<&'static str> {
         return None;
     }
 
+    let totalsize = u32::from_be(header.totalsize) as usize;
     let off_struct = u32::from_be(header.off_dt_struct) as usize;
     let off_strings = u32::from_be(header.off_dt_strings) as usize;
+    let size_dt_strings = u32::from_be(header.size_dt_strings) as usize;
+    let size_dt_struct = u32::from_be(header.size_dt_struct) as usize;
 
-    let struct_ptr = (dtb_ptr + off_struct) as *const u32;
-    let strings_ptr = (dtb_ptr + off_strings) as *const u8;
+    // Bounds: offsets must be inside the blob and must not overflow usize.
+    if off_struct >= totalsize
+        || off_strings >= totalsize
+        || off_struct.checked_add(size_dt_struct).map_or(true, |e| e > totalsize)
+        || off_strings.checked_add(size_dt_strings).map_or(true, |e| e > totalsize)
+    {
+        return None;
+    }
 
-    let mut offset = 0;
+    let struct_base = dtb_ptr.checked_add(off_struct)?;
+    let strings_base = dtb_ptr.checked_add(off_strings)?;
+    let struct_end = struct_base.checked_add(size_dt_struct)?;
+    let strings_end = strings_base.checked_add(size_dt_strings)?;
+
+    let struct_ptr = struct_base as *const u32;
+    let strings_ptr = strings_base as *const u8;
+
+    // Maximum words in the struct section — used as the loop bound.
+    let max_words = size_dt_struct / 4;
+
+    let mut offset = 0usize; // word index within struct section
     let mut in_chosen = false;
-    let mut depth = 0;
+    let mut depth = 0u32;
 
-    for _ in 0..10000 {
+    while offset < max_words {
+        // Each token read advances by exactly 1 word; bounds-check first.
+        if struct_base + offset * 4 + 4 > struct_end {
+            break;
+        }
         let token = u32::from_be(unsafe { *struct_ptr.add(offset) });
         offset += 1;
 
         match token {
-            1 => { // FDT_BEGIN_NODE
-                let name_ptr = unsafe { struct_ptr.add(offset) as *const u8 };
-                let mut len = 0;
-                unsafe {
-                    while *name_ptr.add(len) != 0 {
-                        len += 1;
+            1 => { // FDT_BEGIN_NODE — followed by NUL-terminated name, padded to 4 bytes
+                let name_start = struct_base + offset * 4;
+                if name_start >= struct_end {
+                    break;
+                }
+                let name_ptr = name_start as *const u8;
+                let max_name = struct_end - name_start;
+                let mut name_len = 0usize;
+                // SAFETY: name_ptr + name_len < struct_end, checked in loop.
+                while name_len < max_name {
+                    if unsafe { *name_ptr.add(name_len) } == 0 {
+                        break;
+                    }
+                    name_len += 1;
+                }
+                if name_len < max_name {
+                    let name_slice = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+                    if let Ok(name_str) = core::str::from_utf8(name_slice) {
+                        if name_str == "chosen" {
+                            in_chosen = true;
+                            depth = 1;
+                        } else if in_chosen {
+                            depth += 1;
+                        }
                     }
                 }
-
-                let name_slice = unsafe { core::slice::from_raw_parts(name_ptr, len) };
-                if let Ok(name_str) = core::str::from_utf8(name_slice) {
-                    if name_str == "chosen" {
-                        in_chosen = true;
-                        depth = 1;
-                    } else if in_chosen {
-                        depth += 1;
-                    }
-                }
-
-                let name_bytes = len + 1;
-                let name_words = (name_bytes + 3) / 4;
-                offset += name_words;
+                let name_words = ((name_len + 1) + 3) / 4;
+                offset = offset.saturating_add(name_words);
             }
             2 => { // FDT_END_NODE
                 if in_chosen {
@@ -402,42 +445,79 @@ fn parse_bootargs(dtb_ptr: usize) -> Option<&'static str> {
                     }
                 }
             }
-            3 => { // FDT_PROP
-                let len = u32::from_be(unsafe { *struct_ptr.add(offset) }) as usize;
+            3 => { // FDT_PROP — len (u32), nameoff (u32), value bytes
+                if struct_base + offset * 4 + 8 > struct_end {
+                    break;
+                }
+                let prop_len = u32::from_be(unsafe { *struct_ptr.add(offset) }) as usize;
                 let nameoff = u32::from_be(unsafe { *struct_ptr.add(offset + 1) }) as usize;
                 offset += 2;
 
-                let prop_name_ptr = unsafe { strings_ptr.add(nameoff) };
-                let mut name_len = 0;
-                unsafe {
-                    while *prop_name_ptr.add(name_len) != 0 {
-                        name_len += 1;
-                    }
+                // Validate nameoff is inside the strings section.
+                if strings_base.checked_add(nameoff).map_or(true, |p| p >= strings_end) {
+                    let val_words = (prop_len + 3) / 4;
+                    offset = offset.saturating_add(val_words);
+                    continue;
                 }
-                let prop_name_slice = unsafe { core::slice::from_raw_parts(prop_name_ptr, name_len) };
 
-                if let Ok(prop_name) = core::str::from_utf8(prop_name_slice) {
-                    if in_chosen && prop_name == "bootargs" {
-                        let val_ptr = unsafe { struct_ptr.add(offset) as *const u8 };
-                        let val_len = if len > 0 && unsafe { *val_ptr.add(len - 1) } == 0 {
-                            len - 1
-                        } else {
-                            len
-                        };
-                        let val_slice = unsafe { core::slice::from_raw_parts(val_ptr, val_len) };
-                        if let Ok(bootargs_str) = core::str::from_utf8(val_slice) {
-                            if let Some(init_start) = bootargs_str.find("init=") {
-                                let init_val = &bootargs_str[init_start + 5..];
-                                let init_end = init_val.find(' ').unwrap_or(init_val.len());
-                                let parsed = &init_val[..init_end];
-                                return Some(unsafe { core::mem::transmute::<&str, &'static str>(parsed) });
+                let prop_name_ptr = unsafe { strings_ptr.add(nameoff) };
+                let max_prop_name = strings_end - (strings_base + nameoff);
+                let mut pname_len = 0usize;
+                while pname_len < max_prop_name {
+                    if unsafe { *prop_name_ptr.add(pname_len) } == 0 {
+                        break;
+                    }
+                    pname_len += 1;
+                }
+
+                // Validate that the property value bytes are inside the struct section.
+                let val_start = struct_base + offset * 4;
+                if in_chosen
+                    && pname_len < max_prop_name
+                    && val_start.checked_add(prop_len).map_or(true, |e| e <= struct_end)
+                {
+                    let prop_name_slice =
+                        unsafe { core::slice::from_raw_parts(prop_name_ptr, pname_len) };
+                    if let Ok(prop_name) = core::str::from_utf8(prop_name_slice) {
+                        if prop_name == "bootargs" && prop_len > 0 {
+                            let val_ptr = val_start as *const u8;
+                            // Strip trailing NUL if present.
+                            let val_len =
+                                if unsafe { *val_ptr.add(prop_len - 1) } == 0 {
+                                    prop_len - 1
+                                } else {
+                                    prop_len
+                                };
+                            let val_slice =
+                                unsafe { core::slice::from_raw_parts(val_ptr, val_len) };
+                            if let Ok(bootargs_str) = core::str::from_utf8(val_slice) {
+                                if let Some(init_start) = bootargs_str.find("init=") {
+                                    let init_val = &bootargs_str[init_start + 5..];
+                                    let init_end =
+                                        init_val.find(' ').unwrap_or(init_val.len());
+                                    let parsed = &init_val[..init_end];
+                                    // Copy into static buffer — avoids 'static transmute
+                                    // over DTB memory that the page allocator may reclaim.
+                                    let copy_len = parsed.len().min(63);
+                                    unsafe {
+                                        BOOTARGS_BUF[..copy_len]
+                                            .copy_from_slice(&parsed.as_bytes()[..copy_len]);
+                                        BOOTARGS_BUF[copy_len] = 0;
+                                        BOOTARGS_LEN = copy_len;
+                                        // SAFETY: BOOTARGS_BUF is 'static, UTF-8 validated
+                                        // above, and length is copy_len <= 63.
+                                        return Some(core::str::from_utf8_unchecked(
+                                            &BOOTARGS_BUF[..copy_len],
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                let val_words = (len + 3) / 4;
-                offset += val_words;
+                let val_words = (prop_len + 3) / 4;
+                offset = offset.saturating_add(val_words);
             }
             4 => {} // FDT_NOP
             9 => break, // FDT_END

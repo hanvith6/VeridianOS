@@ -230,7 +230,7 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
             0x9000_0000,
             crate::capability::Rights::WRITE | crate::capability::Rights::EXECUTE,
         );
-        process.handle_table.set(4, queue_handle)?;
+        process.handle_table.force_set(4, queue_handle)?;
 
         // Insert and map VMO capabilities
         let vmo_configs = [
@@ -248,7 +248,7 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
                 virt_base,
                 crate::capability::Rights::READ | crate::capability::Rights::WRITE | crate::capability::Rights::DUPLICATE,
             );
-            process.handle_table.set(handle_id, handle)?;
+            process.handle_table.force_set(handle_id, handle)?;
 
             // Map 4 pages (16KB) for each VMO
             for page_idx in 0..4 {

@@ -56,12 +56,36 @@ pub struct Handle {
 
 impl Handle {
     /// Create a new capability handle.
+    ///
+    /// Kernel-internal TCB use only. Callers bear responsibility for ensuring
+    /// the rights are appropriate. User-facing capability delegation must use
+    /// `derive()` to prevent rights amplification.
     pub const fn new(object_type: ObjectType, object_ptr: usize, rights: Rights) -> Self {
-        Self {
-            object_type,
-            object_ptr,
-            rights,
+        Self { object_type, object_ptr, rights }
+    }
+
+    /// Derive a child capability from this handle, masking rights to a subset.
+    ///
+    /// Enforces the fundamental capability invariant: a derived handle can only
+    /// hold rights that the parent already holds. Amplification is impossible.
+    ///
+    /// Returns `Err` if the caller requests `DUPLICATE` but the parent does not
+    /// hold it (prevents forging of transferable capabilities).
+    pub fn derive(&self, requested: Rights) -> Result<Handle, &'static str> {
+        let granted = self.rights.intersection(requested);
+        if granted != requested {
+            // Caller requested rights not held by parent — reject the escalation.
+            return Err("rights amplification denied");
         }
+        Ok(Handle::new(self.object_type, self.object_ptr, granted))
+    }
+
+    /// Attenuate this handle to a subset of its current rights.
+    ///
+    /// Equivalent to `derive` but never fails — simply masks the rights.
+    /// Use when narrowing rights without a specific request to validate.
+    pub fn attenuate(&self, mask: Rights) -> Handle {
+        Handle::new(self.object_type, self.object_ptr, self.rights.intersection(mask))
     }
 }
 
@@ -88,7 +112,28 @@ impl HandleTable {
     }
 
     /// Set a handle at a specific slot in the table.
+    ///
+    /// Returns `Err` if the slot is already occupied — silent overwrite would
+    /// discard the existing capability without notifying the holder, which is
+    /// a security hazard (capability revocation requires explicit `remove()`).
+    /// Kernel-internal callers that need forced install must call `remove()`
+    /// first, which makes the intent explicit and auditable.
     pub fn set(&mut self, handle_id: usize, handle: Handle) -> Result<(), &'static str> {
+        if handle_id >= MAX_HANDLES {
+            return Err("Invalid handle ID");
+        }
+        if self.slots[handle_id].is_some() {
+            return Err("Handle slot already occupied — call remove() first");
+        }
+        self.slots[handle_id] = Some(handle);
+        Ok(())
+    }
+
+    /// Force-set a handle, replacing any existing occupant.
+    ///
+    /// Kernel-internal use only (boot-time process setup). User-facing paths
+    /// must use `set()` which rejects overwrites.
+    pub(crate) fn force_set(&mut self, handle_id: usize, handle: Handle) -> Result<(), &'static str> {
         if handle_id >= MAX_HANDLES {
             return Err("Invalid handle ID");
         }

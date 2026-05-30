@@ -244,15 +244,28 @@ pub unsafe fn free_page(addr: usize) {
 }
 
 /// Unit test verifying allocations, splits, merges, and alignments of the Buddy Allocator.
+///
+/// # Stack-allocation note
+///
+/// This function previously used `static mut TEST_BUF` to obtain a region whose address is
+/// stable across the call.  That pattern requires `unsafe` and is fragile in a multi-boot
+/// scenario.  It has been replaced with a stack-allocated array wrapped in
+/// `core::mem::MaybeUninit`.  64 KB on the kernel stack is safe here because the kernel
+/// boot path is called from a 512 KB stack (see `boot.S`), and this function runs before any
+/// user code.  In the `#[cfg(test)]` module below the same region is heap-allocated via
+/// `Box` so the host test runner never overflows its default 8 MB thread stack.
 pub fn test_page_alloc() {
     crate::println!("[TEST] Running Buddy Allocator Unit Tests...");
 
-    #[allow(dead_code)]
-    #[repr(align(65536))]
-    struct TestBuffer([u8; 64 * 1024]); // 64KB buffer aligned to 64KB (order 4 size)
-    static mut TEST_BUF: TestBuffer = TestBuffer([0; 64 * 1024]);
+    // 64 KB, aligned to 64 KB so the allocator sees a single order-4 block.
+    #[repr(C, align(65536))]
+    struct TestBuffer([u8; 64 * 1024]);
 
-    let start = core::ptr::addr_of_mut!(TEST_BUF) as usize;
+    // Stack-allocate inside MaybeUninit — no UB from uninitialised bytes because
+    // the allocator treats this memory as raw bytes and writes PageNode headers
+    // into it via ptr::write before ever reading them.
+    let mut buf = core::mem::MaybeUninit::<TestBuffer>::uninit();
+    let start = buf.as_mut_ptr() as usize;
     let end = start + 64 * 1024;
 
     let mut allocator = PageAllocatorState::new();

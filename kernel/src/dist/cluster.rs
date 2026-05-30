@@ -195,12 +195,28 @@ pub fn heartbeat_tick() {
 
 /// Syscall-backing: register a new domain with the given name.
 /// Returns the assigned domain ID on success, negative on error.
+/// Validate that a user-supplied pointer + length range lies within
+/// the user-space virtual address window `[0x4000_0000, 0x8000_0000)`.
+/// Returns false for null pointers, kernel-space addresses, or overflow.
+fn validate_user_buf(ptr: usize, len: usize) -> bool {
+    const USER_START: usize = 0x4000_0000;
+    const USER_END:   usize = 0x8000_0000;
+    if ptr == 0 || len == 0 { return false; }
+    let end = match ptr.checked_add(len) { Some(e) => e, None => return false };
+    ptr >= USER_START && end <= USER_END
+}
+
 pub fn domain_join(name_ptr: usize, name_len: usize) -> isize {
-    // Safety: user pointer validated by length
     let name_bytes = if name_len == 0 {
         b"unknown" as &[u8]
     } else {
         let len = name_len.min(15);
+        // Validate pointer is within mapped user-space before dereferencing.
+        if !validate_user_buf(name_ptr, len) {
+            return -14; // EFAULT
+        }
+        // SAFETY: validate_user_buf confirmed [name_ptr, name_ptr+len) is in
+        // the user address window and len <= 15.
         unsafe { core::slice::from_raw_parts(name_ptr as *const u8, len) }
     };
 
@@ -237,11 +253,12 @@ pub fn domain_list(buf_ptr: usize, buf_len: usize) -> isize {
         .count() as u32;
 
     let needed = 4 + active as usize * 20;
-    if buf_len < needed || buf_ptr == 0 {
-        return active as isize; // Return count even if buffer too small
+    if buf_len < needed || !validate_user_buf(buf_ptr, buf_len) {
+        return active as isize; // Return count even if buffer too small / invalid
     }
 
-    // Safety: caller provides valid mapped buffer
+    // SAFETY: validate_user_buf confirmed [buf_ptr, buf_ptr+buf_len) is within
+    // the user address window.
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
     buf[0..4].copy_from_slice(&active.to_le_bytes());
     let mut off = 4usize;
@@ -262,14 +279,15 @@ pub fn domain_list(buf_ptr: usize, buf_len: usize) -> isize {
 /// Syscall-backing: write cluster status summary into user buffer.
 /// Format: [u8 local_id][u8 domain_count][u8 active_count][u8 seq_hi][u32 seq]
 pub fn domain_status(buf_ptr: usize, buf_len: usize) -> isize {
-    if buf_ptr == 0 || buf_len < 8 {
-        return -1;
+    if buf_len < 8 || !validate_user_buf(buf_ptr, buf_len) {
+        return -14; // EFAULT
     }
     let cs = CLUSTER.lock();
     let active = cs.domains.iter()
         .filter_map(|s| s.as_ref())
         .filter(|d| d.status == DomainStatus::Active)
         .count() as u8;
+    // SAFETY: validate_user_buf confirmed the buffer is within user address space.
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len.min(8)) };
     buf[0] = cs.local_id.0 as u8;
     buf[1] = cs.domain_count;

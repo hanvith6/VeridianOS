@@ -159,24 +159,25 @@ fn sys_handle_duplicate(src_handle_id: usize, rights_mask: usize) -> isize {
             return -13; // EACCES: Permission denied
         }
 
-        // 2. Determine new rights (either inherit original rights or apply a subset).
-        let new_rights = if rights_mask == 0 {
+        // 2. Derive new handle with requested rights masked to parent's rights.
+        // Rights mask of 0 means "inherit all rights from parent" (attenuate to full).
+        let requested = if rights_mask == 0 {
             src_handle.rights
         } else {
-            let mask = Rights::from_bits_truncate(rights_mask as u32);
-            // Ensure the new rights are only a subset of the original rights (cannot escalate rights!)
-            src_handle.rights.intersection(mask)
+            Rights::from_bits_truncate(rights_mask as u32)
         };
-
-        // 3. Create the duplicated handle.
-        let new_handle = Handle::new(src_handle.object_type, src_handle.object_ptr, new_rights);
+        // derive() enforces: granted = parent.rights ∩ requested — amplification impossible.
+        let new_handle = match src_handle.derive(requested) {
+            Ok(h) => h,
+            Err(_) => return -13, // EACCES: attempted rights amplification
+        };
 
         // 4. Insert into the process's handle table.
         match proc.handle_table.insert(new_handle) {
             Ok(new_id) => {
                 println!(
-                    "[SYSCALL] Duplicated handle {} -> {} (new rights: {:?})",
-                    src_handle_id, new_id, new_rights
+                    "[SYSCALL] Duplicated handle {} -> {} (rights: {:?})",
+                    src_handle_id, new_id, new_handle.rights
                 );
                 new_id as isize
             }

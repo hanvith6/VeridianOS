@@ -162,11 +162,10 @@ pub unsafe fn lock_region(slot: usize, phys_start: usize, size: usize) {
     unsafe {
         write_pmpaddr(slot, addr);
 
-        // No R/W/X permissions — deny access. NAPOT mode. No Lock bit yet;
-        // locking prevents the monitor from later unlocking (we lock only at
-        // enclave finalization, not at creation time so we can still write the
-        // enclave image).
-        let cfg = PMP_A_NAPOT; // R=0 W=0 X=0 A=NAPOT L=0
+        // No R/W/X permissions, NAPOT mode, Lock bit set.
+        // PMP_L makes this entry immutable until system reset — a compromised
+        // M-mode code path cannot reconfigure the enclave region after sealing.
+        let cfg = PMP_A_NAPOT | PMP_L; // R=0 W=0 X=0 A=NAPOT L=1
         write_pmpcfg_byte(slot, cfg);
 
         // sfence.vma ensures PMP changes take effect before any subsequent
@@ -218,11 +217,12 @@ pub unsafe fn lock_monitor_self() {
     }
 }
 
-/// Grant R/W/X access to S-mode for a region on the given PMP slot.
+/// Grant R/W (no execute) access to S-mode for a region on the given PMP slot.
 ///
 /// Used temporarily when the monitor needs to let the kernel load an enclave
-/// binary into the enclave region before locking it. After loading, call
-/// `lock_region` to remove the permissions.
+/// binary into the enclave region before sealing it. Execute permission is
+/// intentionally withheld — S-mode must not run code in the region until
+/// `lock_region` seals it and the enclave entry point is verified.
 ///
 /// # Safety
 ///
@@ -231,7 +231,8 @@ pub unsafe fn grant_region(slot: usize, phys_start: usize, size: usize) {
     let addr = napot_encode(phys_start, size);
     unsafe {
         write_pmpaddr(slot, addr);
-        let cfg = PMP_R | PMP_W | PMP_X | PMP_A_NAPOT; // Full access, no Lock
+        // R+W only — no execute during binary loading phase.
+        let cfg = PMP_R | PMP_W | PMP_A_NAPOT; // X withheld until enclave_enter
         write_pmpcfg_byte(slot, cfg);
         core::arch::asm!("sfence.vma");
     }

@@ -15,6 +15,11 @@ use spin::Mutex;
 
 // Import symbols defined in our linker script (linker.ld)
 unsafe extern "C" {
+    fn _text_start();
+    fn _text_end();
+    fn _rodata_start();
+    fn _rodata_end();
+    fn _data_start();
     fn _free_mem_start();
     fn _heap_start();
     fn _heap_end();
@@ -58,18 +63,49 @@ pub fn init(_dtb_ptr: usize) {
     // 4. Set up the initial virtual mappings for kernel space.
     let mut root_table = KERNEL_PAGE_TABLE.lock();
 
-    // Map kernel sections and all physical RAM (from 0x8020_0000 up to ram_end) using identity mapping.
-    // In identity mapping, virtual address == physical address.
-    let kernel_start = 0x8020_0000;
-    let mut addr = kernel_start;
+    // Map kernel sections with W^X-separated permissions (identity mapping).
+    //
+    // Section layout from linker.ld (all 4K-page aligned):
+    //   [_text_start,   _text_end)   → READ | EXECUTE   (no write)
+    //   [_rodata_start, _rodata_end) → READ              (no write, no execute)
+    //   [_data_start,   ram_end)     → READ | WRITE      (data, bss, stack, heap, free pages)
+    //
+    // Rationale: a uniform RWX mapping means any kernel write primitive can
+    // inject shellcode into .text. Section separation closes this attack surface.
+    let text_start  = unsafe { _text_start   as *const () as usize };
+    let text_end    = unsafe { _text_end     as *const () as usize };
+    let rodata_start= unsafe { _rodata_start as *const () as usize };
+    let rodata_end  = unsafe { _rodata_end   as *const () as usize };
+    let data_start  = unsafe { _data_start   as *const () as usize };
+
+    // .text — read + execute, no write
+    let mut addr = text_start;
+    while addr < text_end {
+        unsafe {
+            root_table
+                .map(addr, addr, PageTableFlags::READ | PageTableFlags::EXECUTE)
+                .expect("Failed to map .text");
+        }
+        addr += PAGE_SIZE;
+    }
+
+    // .rodata — read only
+    let mut addr = rodata_start;
+    while addr < rodata_end {
+        unsafe {
+            root_table
+                .map(addr, addr, PageTableFlags::READ)
+                .expect("Failed to map .rodata");
+        }
+        addr += PAGE_SIZE;
+    }
+
+    // .data / .bss / stack / heap / free pages — read + write, no execute
+    let mut addr = data_start;
     while addr < ram_end {
         unsafe {
             root_table
-                .map(
-                    addr,
-                    addr,
-                    PageTableFlags::READ | PageTableFlags::WRITE | PageTableFlags::EXECUTE,
-                )
+                .map(addr, addr, PageTableFlags::READ | PageTableFlags::WRITE)
                 .expect("Failed to map RAM memory");
         }
         addr += PAGE_SIZE;

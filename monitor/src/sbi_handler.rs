@@ -99,17 +99,17 @@ fn handle_hsm(fid: usize, a0: usize, a1: usize, a2: usize) -> SbiRet {
         return SbiRet::err(enclave::SBI_ERR_INVALID_PARAM);
     }
 
+    use core::sync::atomic::Ordering;
+    let hs = &crate::HART_STATES[hartid];
+    if hs.state.load(Ordering::Acquire) != 0 {
+        return SbiRet::err(enclave::SBI_ERR_ALREADY_AVAILABLE);
+    }
+    hs.start_addr.store(start_addr, Ordering::Release);
+    hs.opaque.store(opaque,         Ordering::Release);
+    hs.state.store(1,               Ordering::Release);
+
+    // Trigger MSIP on target hart to wake it from WFI.
     unsafe {
-        let state = core::ptr::read_volatile(core::ptr::addr_of!(crate::HART_STATES[hartid].state));
-        if state != 0 {
-            return SbiRet::err(enclave::SBI_ERR_ALREADY_AVAILABLE);
-        }
-        
-        crate::HART_STATES[hartid].start_addr = start_addr;
-        crate::HART_STATES[hartid].opaque = opaque;
-        core::ptr::write_volatile(core::ptr::addr_of_mut!(crate::HART_STATES[hartid].state), 1);
-        
-        // Trigger MSIP on target hart to wake it from WFI
         let msip = (0x0200_0000 + 4 * hartid) as *mut u32;
         core::ptr::write_volatile(msip, 1);
     }

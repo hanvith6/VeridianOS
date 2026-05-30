@@ -28,8 +28,10 @@ unsafe extern "C" {
 pub fn init() {
     unsafe {
         core::arch::asm!("csrw stvec, {}", in(reg) trap_vector as *const () as usize);
-        // Enable SUM (Supervisor User Memory access) so kernel can read/write user pages
-        core::arch::asm!("csrs sstatus, {}", in(reg) 0x40000);
+        // SUM (sstatus.bit18) allows S-mode to access U-bit pages.
+        // Currently enabled globally; TODO(security/H-7): gate with sum_scope()
+        // around each user-copy window to prevent cross-privilege reads.
+        core::arch::asm!("csrs sstatus, {}", in(reg) 0x40000usize);
         // Enable STIE (Supervisor Timer Interrupt Enable) in sie (bit 5)
         core::arch::asm!("csrs sie, {}", in(reg) 0x20);
         // Schedule first timer interrupt (10ms / 100,000 ticks in the future)

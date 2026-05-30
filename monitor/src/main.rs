@@ -110,19 +110,25 @@ pub struct TrapFrame {
     pub mepc: usize,
 }
 
-#[derive(Clone, Copy)]
-#[repr(C)]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// Per-hart state shared between hart 0 (writer) and secondary harts (readers).
+/// Fields are AtomicUsize so cross-hart reads/writes are data-race-free under
+/// Rust's memory model. state=1 means "running", state=0 means "parked".
 pub struct HartState {
-    pub start_addr: usize,
-    pub opaque: usize,
-    pub state: usize,
+    pub start_addr: AtomicUsize,
+    pub opaque:     AtomicUsize,
+    pub state:      AtomicUsize,
 }
 
-pub static mut HART_STATES: [HartState; 4] = [
-    HartState { start_addr: 0, opaque: 0, state: 1 },
-    HartState { start_addr: 0, opaque: 0, state: 0 },
-    HartState { start_addr: 0, opaque: 0, state: 0 },
-    HartState { start_addr: 0, opaque: 0, state: 0 },
+// SAFETY: AtomicUsize is Send + Sync; the struct contains only atomics.
+unsafe impl Sync for HartState {}
+
+pub static HART_STATES: [HartState; 4] = [
+    HartState { start_addr: AtomicUsize::new(0), opaque: AtomicUsize::new(0), state: AtomicUsize::new(1) },
+    HartState { start_addr: AtomicUsize::new(0), opaque: AtomicUsize::new(0), state: AtomicUsize::new(0) },
+    HartState { start_addr: AtomicUsize::new(0), opaque: AtomicUsize::new(0), state: AtomicUsize::new(0) },
+    HartState { start_addr: AtomicUsize::new(0), opaque: AtomicUsize::new(0), state: AtomicUsize::new(0) },
 ];
 
 // -----------------------------------------------------------------------
@@ -149,43 +155,41 @@ pub extern "C" fn monitor_main(hart_id: usize, dtb_ptr: usize) -> ! {
     if hart_id != 0 {
         // Park secondary harts in a M-mode loop until woken via SBI HSM
         loop {
-            unsafe {
-                let state = core::ptr::read_volatile(core::ptr::addr_of!(HART_STATES[hart_id].state));
+            {
+                let state = HART_STATES[hart_id].state.load(Ordering::Acquire);
                 if state == 1 {
-                    let start_addr = core::ptr::read_volatile(core::ptr::addr_of!(HART_STATES[hart_id].start_addr));
-                    let opaque = core::ptr::read_volatile(core::ptr::addr_of!(HART_STATES[hart_id].opaque));
-                    
-                    // Clear pending MSIP
-                    let msip = (0x0200_0000 + 4 * hart_id) as *mut u32;
-                    core::ptr::write_volatile(msip, 0);
+                    let start_addr = HART_STATES[hart_id].start_addr.load(Ordering::Acquire);
+                    let opaque     = HART_STATES[hart_id].opaque.load(Ordering::Acquire);
+                    unsafe {
+                        // Clear pending MSIP
+                        let msip = (0x0200_0000 + 4 * hart_id) as *mut u32;
+                        core::ptr::write_volatile(msip, 0);
 
-                    // Set mtvec to our trap handler
-                    csr_write!("mtvec", m_trap_vector as *const () as usize);
+                        // Set mtvec to our trap handler
+                        csr_write!("mtvec", m_trap_vector as *const () as usize);
 
-                    // Configure PMP to protect monitor memory
-                    pmp::lock_monitor_self();
+                        // Configure PMP to protect monitor memory
+                        pmp::lock_monitor_self();
 
-                    // Set mstatus.MPP = 01 (S-mode) and MPIE
-                    let mut mstatus = csr_read!("mstatus");
-                    mstatus &= !0x1800; // Clear MPP
-                    mstatus |= 0x0800;  // MPP = S-mode
-                    mstatus |= 0x0080;  // MPIE
-                    csr_write!("mstatus", mstatus);
+                        // Set mstatus.MPP = 01 (S-mode) and MPIE
+                        let mut mstatus = csr_read!("mstatus");
+                        mstatus &= !0x1800;
+                        mstatus |= 0x0800;
+                        mstatus |= 0x0080;
+                        csr_write!("mstatus", mstatus);
+                        csr_write!("mepc", start_addr);
 
-                    // Set mepc to start_addr
-                    csr_write!("mepc", start_addr);
-
-                    // Jump to S-mode (mret) passing hart_id in a0 and opaque in a1
-                    core::arch::asm!(
-                        "mv a0, {hart}",
-                        "mv a1, {opaque}",
-                        "mret",
-                        hart = in(reg) hart_id,
-                        opaque = in(reg) opaque,
-                        options(noreturn),
-                    );
+                        core::arch::asm!(
+                            "mv a0, {hart}",
+                            "mv a1, {opaque}",
+                            "mret",
+                            hart = in(reg) hart_id,
+                            opaque = in(reg) opaque,
+                            options(noreturn),
+                        );
+                    }
                 }
-                core::arch::asm!("wfi");
+                unsafe { core::arch::asm!("wfi") };
             }
         }
     }
