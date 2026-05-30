@@ -72,9 +72,9 @@ graph TD
 
     Scheduler -->|Wakeup| App
     
-    classDef user fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef kernel fill:#efebe9,stroke:#3e2723,stroke-width:2px;
-    classDef hw fill:#efe8e0,stroke:#e65100,stroke-width:2px;
+    classDef user fill:#1565c0,stroke:#90caf9,color:#ffffff,stroke-width:2px;
+    classDef kernel fill:#4e342e,stroke:#bcaaa4,color:#ffffff,stroke-width:2px;
+    classDef hw fill:#e65100,stroke:#ffcc80,color:#ffffff,stroke-width:2px;
     
     class App,UserVMOs user;
     class SyscallHandler,CapTable,GraphPool,DAGValidator,Scheduler,CPU_Queue,GPU_Queue,NPU_Queue kernel;

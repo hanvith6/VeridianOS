@@ -60,10 +60,10 @@ graph TD
     VMOHandle -->|"SYS_VMO_MAP"| VPN0
     PPN -->|"resolved PA"| FreePool
 
-    classDef ram fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    classDef buddy fill:#fff3e0,stroke:#e65100,stroke-width:2px;
-    classDef walk fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-    classDef user fill:#fce4ec,stroke:#880e4f,stroke-width:2px;
+    classDef ram fill:#2e7d32,stroke:#a5d6a7,color:#ffffff,stroke-width:2px;
+    classDef buddy fill:#e65100,stroke:#ffcc80,color:#ffffff,stroke-width:2px;
+    classDef walk fill:#1565c0,stroke:#90caf9,color:#ffffff,stroke-width:2px;
+    classDef user fill:#880e4f,stroke:#f48fb1,color:#ffffff,stroke-width:2px;
 
     class KernelImage,FreePool ram;
     class FL0,FL1,FLdot,FL10 buddy;

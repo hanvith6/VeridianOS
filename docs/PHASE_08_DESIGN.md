@@ -81,9 +81,9 @@ graph TD
 
     NodePool -.->|"Example traversal:\nBinary --[DependsOn]--> ServiceEndpoint"| NodePool
 
-    classDef user fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef kernel fill:#efebe9,stroke:#3e2723,stroke-width:2px;
-    classDef mem fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef user fill:#1565c0,stroke:#90caf9,color:#ffffff,stroke-width:2px;
+    classDef kernel fill:#4e342e,stroke:#bcaaa4,color:#ffffff,stroke-width:2px;
+    classDef mem fill:#2e7d32,stroke:#a5d6a7,color:#ffffff,stroke-width:2px;
 
     class App,UserPtrs user;
     class Dispatcher,CapTable,NodeAlloc,EdgeMgr,QueryEngine,NodePool,IDCounter kernel;

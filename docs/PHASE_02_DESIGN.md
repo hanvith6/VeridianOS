@@ -66,10 +66,10 @@ graph TD
 
     Attenuation -->|"SYS_HANDLE_DUPLICATE with mask"| HandleTable
 
-    classDef user fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef boundary fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px;
-    classDef capability fill:#efebe9,stroke:#3e2723,stroke-width:2px;
-    classDef object fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef user fill:#1565c0,stroke:#90caf9,stroke-width:2px,color:#ffffff;
+    classDef boundary fill:#6a1b9a,stroke:#ce93d8,stroke-width:2px,color:#ffffff;
+    classDef capability fill:#4e342e,stroke:#bcaaa4,stroke-width:2px,color:#ffffff;
+    classDef object fill:#e65100,stroke:#ffcc80,stroke-width:2px,color:#ffffff;
 
     class Proc,SyscallSite user;
     class Dispatcher,Rights_Check boundary;

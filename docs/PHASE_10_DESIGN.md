@@ -79,9 +79,9 @@ graph TD
     EMAUpdate -->|"write lock"| PolicyStats
     SyscallHandler -->|"GET_STATS / SET_EXPLORATION / RESET_STATS"| PolicyStats
 
-    classDef user fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef kernel fill:#efebe9,stroke:#3e2723,stroke-width:2px;
-    classDef sim fill:#efe8e0,stroke:#e65100,stroke-width:2px;
+    classDef user fill:#1565c0,stroke:#90caf9,color:#ffffff,stroke-width:2px;
+    classDef kernel fill:#4e342e,stroke:#bcaaa4,color:#ffffff,stroke-width:2px;
+    classDef sim fill:#e65100,stroke:#ffcc80,color:#ffffff,stroke-width:2px;
     class App,PolicyTest user;
     class SyscallHandler,GraphSubmit,PolicyRouter,EpsilonGreedy,Exploit,Explore,PolicyStats,EMAUpdate,CPUQueue,GPUQueue,NPUQueue kernel;
     class CPUSim,GPUSim,NPUSim sim;

@@ -61,10 +61,10 @@ graph TD
     UART0 --> Terminal
     Rust -.->|"on panic"| Panic
 
-    classDef host fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px;
-    classDef firmware fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
-    classDef kernel fill:#efebe9,stroke:#3e2723,stroke-width:2px;
-    classDef hw fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef host fill:#6a1b9a,stroke:#ce93d8,color:#ffffff,stroke-width:2px;
+    classDef firmware fill:#1b5e20,stroke:#a5d6a7,color:#ffffff,stroke-width:2px;
+    classDef kernel fill:#4e342e,stroke:#bcaaa4,color:#ffffff,stroke-width:2px;
+    classDef hw fill:#e65100,stroke:#ffcc80,color:#ffffff,stroke-width:2px;
 
     class QEMU host;
     class OpenSBI firmware;

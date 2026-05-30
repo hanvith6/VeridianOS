@@ -71,11 +71,11 @@ graph TD
     SetMPP --> SetSEPC --> SetSATP --> SFence --> SetSP --> Sret
     Sret --> UserEntry --> SysWrite --> SysExit
 
-    classDef ramfs fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    classDef loader fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-    classDef pt fill:#fff3e0,stroke:#e65100,stroke-width:2px;
-    classDef trans fill:#fce4ec,stroke:#880e4f,stroke-width:2px;
-    classDef umode fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef ramfs fill:#2e7d32,stroke:#a5d6a7,color:#ffffff,stroke-width:2px;
+    classDef loader fill:#1565c0,stroke:#90caf9,color:#ffffff,stroke-width:2px;
+    classDef pt fill:#e65100,stroke:#ffcc80,color:#ffffff,stroke-width:2px;
+    classDef trans fill:#880e4f,stroke:#f48fb1,color:#ffffff,stroke-width:2px;
+    classDef umode fill:#4a148c,stroke:#ce93d8,color:#ffffff,stroke-width:2px;
 
     class ELFBytes ramfs;
     class ValidateMagic,ValidateArch,IterPhdrs,PTLoad,CopyFile,ZeroBSS,EntryPt loader;

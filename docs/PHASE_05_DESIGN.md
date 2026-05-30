@@ -60,11 +60,11 @@ graph TD
     FileIndex --> FindFn
     FindFn -->|"&'static [u8] ELF bytes"| PhaseNext["Phase 6: ELF Loader"]
 
-    classDef build fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    classDef qemu fill:#fff3e0,stroke:#e65100,stroke-width:2px;
-    classDef driver fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-    classDef ramfs fill:#fce4ec,stroke:#880e4f,stroke-width:2px;
-    classDef buf fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef build fill:#2e7d32,stroke:#a5d6a7,color:#ffffff,stroke-width:2px;
+    classDef qemu fill:#e65100,stroke:#ffcc80,color:#ffffff,stroke-width:2px;
+    classDef driver fill:#1565c0,stroke:#90caf9,color:#ffffff,stroke-width:2px;
+    classDef ramfs fill:#880e4f,stroke:#f48fb1,color:#ffffff,stroke-width:2px;
+    classDef buf fill:#4a148c,stroke:#ce93d8,color:#ffffff,stroke-width:2px;
 
     class TAR build;
     class VirtIODev,Doorbell qemu;
