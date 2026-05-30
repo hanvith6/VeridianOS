@@ -334,8 +334,13 @@ pub extern "C" fn m_trap_vector() -> ! {
 ///
 /// `frame` points to the TrapFrame on the M-mode stack. In a full assembly
 /// implementation this is called as `call m_trap_handler` after saving ra.
+/// # Safety
+/// Caller must pass a valid, aligned, non-null pointer to a TrapFrame that
+/// lives for the duration of this call. Called only from the M-mode assembly
+/// trap entry stub after saving all registers onto the M-mode stack.
 #[unsafe(no_mangle)]
-pub extern "C" fn m_trap_handler(frame: *mut TrapFrame) {
+pub unsafe extern "C" fn m_trap_handler(frame: *mut TrapFrame) {
+    // SAFETY: precondition guaranteed by assembly trap entry stub.
     let frame = unsafe { &mut *frame };
 
     let mcause = csr_read!("mcause");
