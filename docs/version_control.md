@@ -441,7 +441,7 @@ Supervisor-mode research kernel
 VeridianOS is currently in:
 
 ```text
-Design Phase 11 (Distributed Multi-Kernel Coherence)
+Design Phase 12 Complete (M-Mode TEE Security Monitor)
 ```
 
 This means the project is still in:
