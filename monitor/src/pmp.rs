@@ -123,7 +123,7 @@ unsafe fn write_pmpaddr(entry: usize, addr: usize) {
     // We cannot use a single csrw with a runtime register number; each CSR
     // address is a compile-time constant in RISC-V assembly. Use a match to
     // select the correct instruction.
-    match entry {
+    unsafe { match entry {
         0  => core::arch::asm!("csrw pmpaddr0,  {}", in(reg) addr),
         1  => core::arch::asm!("csrw pmpaddr1,  {}", in(reg) addr),
         2  => core::arch::asm!("csrw pmpaddr2,  {}", in(reg) addr),
@@ -140,7 +140,7 @@ unsafe fn write_pmpaddr(entry: usize, addr: usize) {
         13 => core::arch::asm!("csrw pmpaddr13, {}", in(reg) addr),
         14 => core::arch::asm!("csrw pmpaddr14, {}", in(reg) addr),
         _  => core::arch::asm!("csrw pmpaddr15, {}", in(reg) addr),
-    }
+    } }
 }
 
 // -----------------------------------------------------------------------
@@ -159,18 +159,20 @@ unsafe fn write_pmpaddr(entry: usize, addr: usize) {
 /// must be a power of two >= 8 bytes.
 pub unsafe fn lock_region(slot: usize, phys_start: usize, size: usize) {
     let addr = napot_encode(phys_start, size);
-    write_pmpaddr(slot, addr);
+    unsafe {
+        write_pmpaddr(slot, addr);
 
-    // No R/W/X permissions — deny access. NAPOT mode. No Lock bit yet;
-    // locking prevents the monitor from later unlocking (we lock only at
-    // enclave finalization, not at creation time so we can still write the
-    // enclave image).
-    let cfg = PMP_A_NAPOT; // R=0 W=0 X=0 A=NAPOT L=0
-    write_pmpcfg_byte(slot, cfg);
+        // No R/W/X permissions — deny access. NAPOT mode. No Lock bit yet;
+        // locking prevents the monitor from later unlocking (we lock only at
+        // enclave finalization, not at creation time so we can still write the
+        // enclave image).
+        let cfg = PMP_A_NAPOT; // R=0 W=0 X=0 A=NAPOT L=0
+        write_pmpcfg_byte(slot, cfg);
 
-    // sfence.vma ensures PMP changes take effect before any subsequent
-    // S-mode memory access. RISC-V spec §3.6: PMP changes require a fence.
-    core::arch::asm!("sfence.vma");
+        // sfence.vma ensures PMP changes take effect before any subsequent
+        // S-mode memory access. RISC-V spec §3.6: PMP changes require a fence.
+        core::arch::asm!("sfence.vma");
+    }
 }
 
 /// Remove the PMP lock on slot `slot`, restoring S-mode access to the region.
@@ -184,9 +186,11 @@ pub unsafe fn lock_region(slot: usize, phys_start: usize, size: usize) {
 /// Must be called from M-mode.
 pub unsafe fn unlock_region(slot: usize) {
     // Disable the entry by setting A=OFF (all zeros).
-    write_pmpcfg_byte(slot, 0);
-    write_pmpaddr(slot, 0);
-    core::arch::asm!("sfence.vma");
+    unsafe {
+        write_pmpcfg_byte(slot, 0);
+        write_pmpaddr(slot, 0);
+        core::arch::asm!("sfence.vma");
+    }
 }
 
 /// Configure PMP entry 15 to protect the monitor's own image and stack.
@@ -203,13 +207,15 @@ pub unsafe fn lock_monitor_self() {
     const MONITOR_SIZE: usize = 256 * 1024; // 256 KiB
 
     let addr = napot_encode(MONITOR_BASE, MONITOR_SIZE);
-    write_pmpaddr(MONITOR_SELF_ENTRY, addr);
+    unsafe {
+        write_pmpaddr(MONITOR_SELF_ENTRY, addr);
 
-    // No permissions to S/U, NAPOT, Lock bit set.
-    let cfg = PMP_A_NAPOT | PMP_L;
-    write_pmpcfg_byte(MONITOR_SELF_ENTRY, cfg);
+        // No permissions to S/U, NAPOT, Lock bit set.
+        let cfg = PMP_A_NAPOT | PMP_L;
+        write_pmpcfg_byte(MONITOR_SELF_ENTRY, cfg);
 
-    core::arch::asm!("sfence.vma");
+        core::arch::asm!("sfence.vma");
+    }
 }
 
 /// Grant R/W/X access to S-mode for a region on the given PMP slot.
@@ -223,10 +229,12 @@ pub unsafe fn lock_monitor_self() {
 /// Must be called from M-mode.
 pub unsafe fn grant_region(slot: usize, phys_start: usize, size: usize) {
     let addr = napot_encode(phys_start, size);
-    write_pmpaddr(slot, addr);
-    let cfg = PMP_R | PMP_W | PMP_X | PMP_A_NAPOT; // Full access, no Lock
-    write_pmpcfg_byte(slot, cfg);
-    core::arch::asm!("sfence.vma");
+    unsafe {
+        write_pmpaddr(slot, addr);
+        let cfg = PMP_R | PMP_W | PMP_X | PMP_A_NAPOT; // Full access, no Lock
+        write_pmpcfg_byte(slot, cfg);
+        core::arch::asm!("sfence.vma");
+    }
 }
 
 /// Check whether a PMP slot is currently active (A != OFF).
@@ -235,6 +243,6 @@ pub unsafe fn grant_region(slot: usize, phys_start: usize, size: usize) {
 ///
 /// Must be called from M-mode.
 pub unsafe fn slot_is_active(slot: usize) -> bool {
-    let cfg = read_pmpcfg_byte(slot);
+    let cfg = unsafe { read_pmpcfg_byte(slot) };
     (cfg & (0b11 << 3)) != 0 // A field != OFF
 }

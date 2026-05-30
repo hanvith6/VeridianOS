@@ -19,6 +19,7 @@
 
 #![no_std]
 #![no_main]
+#![allow(unused_unsafe)]
 
 pub mod attest;
 pub mod enclave;
@@ -109,29 +110,91 @@ pub struct TrapFrame {
     pub mepc: usize,
 }
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct HartState {
+    pub start_addr: usize,
+    pub opaque: usize,
+    pub state: usize,
+}
+
+pub static mut HART_STATES: [HartState; 4] = [
+    HartState { start_addr: 0, opaque: 0, state: 1 },
+    HartState { start_addr: 0, opaque: 0, state: 0 },
+    HartState { start_addr: 0, opaque: 0, state: 0 },
+    HartState { start_addr: 0, opaque: 0, state: 0 },
+];
+
 // -----------------------------------------------------------------------
 // M-mode entry point
 // -----------------------------------------------------------------------
 
-/// M-mode entry: a0 = hart_id, a1 = dtb_ptr
-///
-/// Called by QEMU before the kernel when this binary is passed as `-bios`.
-/// We must:
-///   1. Set up M-mode stack and trap vector
-///   2. Configure PMP to protect monitor memory from S-mode
-///   3. Delegate standard SBI extensions to OpenSBI pass-through (or handle inline)
-///   4. Drop privilege to S-mode and jump to the kernel
-///
-/// For `cargo check` purposes the full assembly entry stub is stubbed out here.
-/// A real deployment requires a linker script placing this at 0x80000000 and
-/// an assembly trampoline that saves registers and calls `m_trap_handler`.
+// M-mode entry: a0 = hart_id, a1 = dtb_ptr
+// Called by QEMU as -bios before the S-mode kernel.
+// Sets up per-hart stack (8 KiB each), then tail-calls monitor_main.
+// Full trap delegation and PMP self-protection happen inside monitor_main.
+core::arch::global_asm!(
+    ".section .text.entry",
+    ".globl _start",
+    "_start:",
+    "la sp, _stack_top",
+    "li t0, 8192",
+    "mul t0, a0, t0",
+    "sub sp, sp, t0",
+    "tail monitor_main"
+);
+
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(hart_id: usize, dtb_ptr: usize) -> ! {
+pub extern "C" fn monitor_main(hart_id: usize, dtb_ptr: usize) -> ! {
+    if hart_id != 0 {
+        // Park secondary harts in a M-mode loop until woken via SBI HSM
+        loop {
+            unsafe {
+                let state = core::ptr::read_volatile(core::ptr::addr_of!(HART_STATES[hart_id].state));
+                if state == 1 {
+                    let start_addr = core::ptr::read_volatile(core::ptr::addr_of!(HART_STATES[hart_id].start_addr));
+                    let opaque = core::ptr::read_volatile(core::ptr::addr_of!(HART_STATES[hart_id].opaque));
+                    
+                    // Clear pending MSIP
+                    let msip = (0x0200_0000 + 4 * hart_id) as *mut u32;
+                    core::ptr::write_volatile(msip, 0);
+
+                    // Set mtvec to our trap handler
+                    csr_write!("mtvec", m_trap_vector as *const () as usize);
+
+                    // Configure PMP to protect monitor memory
+                    pmp::lock_monitor_self();
+
+                    // Set mstatus.MPP = 01 (S-mode) and MPIE
+                    let mut mstatus = csr_read!("mstatus");
+                    mstatus &= !0x1800; // Clear MPP
+                    mstatus |= 0x0800;  // MPP = S-mode
+                    mstatus |= 0x0080;  // MPIE
+                    csr_write!("mstatus", mstatus);
+
+                    // Set mepc to start_addr
+                    csr_write!("mepc", start_addr);
+
+                    // Jump to S-mode (mret) passing hart_id in a0 and opaque in a1
+                    core::arch::asm!(
+                        "mv a0, {hart}",
+                        "mv a1, {opaque}",
+                        "mret",
+                        hart = in(reg) hart_id,
+                        opaque = in(reg) opaque,
+                        options(noreturn),
+                    );
+                }
+                core::arch::asm!("wfi");
+            }
+        }
+    }
+
     // Safety: We are in M-mode at firmware entry. No other privilege level is active.
 
     // 1. Set mtvec to our trap handler (direct mode, bit 0 = 0).
     //    All M-mode exceptions and interrupts vector here.
-    csr_write!("mtvec", m_trap_vector as usize);
+    csr_write!("mtvec", m_trap_vector as *const () as usize);
 
     // 2. Lock the monitor's own memory with PMP entry 15 (highest priority).
     //    Monitor image lives at [0x80000000, 0x80040000) — 256 KiB.
@@ -229,8 +292,10 @@ pub extern "C" fn m_trap_vector() -> ! {
 
                 let ret = sbi_handler::dispatch(a7, a6, a0, a1, a2);
 
-                // Advance mepc past the ecall instruction (4 bytes).
-                csr_write!("mepc", mepc.wrapping_add(4));
+                // Advance mepc past the ecall instruction (4 bytes) unless this is a successful enclave_enter/exit.
+                if !(a7 == 0x08424B45 && (a6 == 1 || a6 == 2) && ret.error == 0) {
+                    csr_write!("mepc", mepc.wrapping_add(4));
+                }
 
                 // Write SBI return values back into a0 (error) and a1 (value).
                 unsafe {
@@ -250,8 +315,17 @@ pub extern "C" fn m_trap_vector() -> ! {
             }
         }
     } else {
-        // Timer interrupt delegated to S-mode by setting mtip in mip.
-        // For now simply mret — in production forward to S-mode via CLINT.
+        // Handle Machine Software Interrupt (MSI)
+        if cause_code == 3 {
+            let hart_id = csr_read!("mhartid");
+            unsafe {
+                // Clear MSIP
+                let msip = (0x0200_0000 + 4 * hart_id) as *mut u32;
+                core::ptr::write_volatile(msip, 0);
+                // Set SSIP in mip (bit 1) to trigger supervisor software interrupt
+                core::arch::asm!("csrs mip, {}", in(reg) 1usize << 1);
+            }
+        }
         unsafe { core::arch::asm!("mret", options(noreturn)); }
     }
 }
@@ -277,8 +351,10 @@ pub extern "C" fn m_trap_handler(frame: *mut TrapFrame) {
         frame.a0 = ret.error as usize;
         frame.a1 = ret.value as usize;
 
-        // Advance saved mepc past the ecall instruction.
-        frame.mepc = frame.mepc.wrapping_add(4);
+        // Advance saved mepc past the ecall instruction unless this is a successful enclave_enter/exit.
+        if !(frame.a7 == 0x08424B45 && (frame.a6 == 1 || frame.a6 == 2) && ret.error == 0) {
+            frame.mepc = frame.mepc.wrapping_add(4);
+        }
     }
     // All other causes are handled by their delegated exception in S/U mode,
     // or cause a monitor halt for unexpected M-mode faults.

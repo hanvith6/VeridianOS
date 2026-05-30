@@ -15,3 +15,5 @@
 # Backup files
 *.bk
 *.bak
+.agent/
+.gemini/

@@ -126,7 +126,7 @@ pub static mut ENCLAVE_POOL: [Enclave; MAX_ENCLAVES] = [
 pub unsafe fn init_pool() {
     let pool: *mut [Enclave; MAX_ENCLAVES] = core::ptr::addr_of_mut!(ENCLAVE_POOL);
     for i in 0..MAX_ENCLAVES {
-        let slot = &mut (*pool)[i];
+        let slot = unsafe { &mut (*pool)[i] };
         slot.state = EnclaveState::Empty;
         slot.allocated = false;
         slot.phys_start = 0;
@@ -190,26 +190,26 @@ pub unsafe fn enclave_create(
     let pool: *mut [Enclave; MAX_ENCLAVES] = core::ptr::addr_of_mut!(ENCLAVE_POOL);
     let mut found_idx = None;
     for i in 0..MAX_ENCLAVES {
-        if !(*pool)[i].allocated {
+        if unsafe { !(*pool)[i].allocated } {
             found_idx = Some(i);
             break;
         }
     }
     let slot_idx = found_idx.ok_or(SBI_ERR_FAILED)?;
-    let slot = &mut (*pool)[slot_idx];
+    let slot = unsafe { &mut (*pool)[slot_idx] };
 
     let pmp_slot = slot.pmp_slot;
 
     // --- Configure PMP: grant R/W to S-mode for binary loading ---
     // We deliberately withhold X until enclave_enter so the kernel cannot
     // execute code in the enclave region before measurement is finalized.
-    pmp::grant_region(pmp_slot, phys_addr, size);
+    unsafe { pmp::grant_region(pmp_slot, phys_addr, size); }
 
     // --- Compute measurement ---
     // SHA-256 over the raw physical bytes of the enclave region.
     // Safety: phys_addr is a valid physical address provided by the kernel.
     // The kernel has already mapped/zeroed this memory.
-    let region_slice = core::slice::from_raw_parts(phys_addr as *const u8, size);
+    let region_slice = unsafe { core::slice::from_raw_parts(phys_addr as *const u8, size) };
     let measurement = attest::sha256(region_slice);
 
     // --- Initialize slot ---
@@ -240,7 +240,7 @@ pub unsafe fn enclave_create(
 ///
 /// Must be called from M-mode trap handler context with interrupts disabled.
 pub unsafe fn enclave_enter(enclave_id: u8, kernel_mepc: usize, kernel_mstatus: usize) -> Result<(), isize> {
-    let slot = find_slot_mut(enclave_id).ok_or(SBI_ERR_INVALID_PARAM)?;
+    let slot = unsafe { find_slot_mut(enclave_id) }.ok_or(SBI_ERR_INVALID_PARAM)?;
 
     if slot.state != EnclaveState::Created {
         return Err(SBI_ERR_DENIED);
@@ -263,7 +263,7 @@ pub unsafe fn enclave_enter(enclave_id: u8, kernel_mepc: usize, kernel_mstatus: 
     // and rely on the enclave being mapped in U-mode page tables by the kernel
     // before entering. A production implementation uses two PMP entries per
     // enclave (one deny-all for S, one allow for U with execute).
-    pmp::lock_region(pmp_slot, phys_start, size);
+    unsafe { pmp::lock_region(pmp_slot, phys_start, size); }
 
     // mret to U-mode at entry_pa.
     // Set mstatus.MPP = 00 (U-mode), clear MPIE (enclave starts with interrupts off).
@@ -289,7 +289,7 @@ pub unsafe fn enclave_enter(enclave_id: u8, kernel_mepc: usize, kernel_mstatus: 
 ///
 /// Must be called from M-mode trap handler context.
 pub unsafe fn enclave_exit(enclave_id: u8) -> Result<(usize, usize), isize> {
-    let slot = find_slot_mut(enclave_id).ok_or(SBI_ERR_INVALID_PARAM)?;
+    let slot = unsafe { find_slot_mut(enclave_id) }.ok_or(SBI_ERR_INVALID_PARAM)?;
 
     if slot.state != EnclaveState::Running {
         return Err(SBI_ERR_DENIED);
@@ -300,7 +300,7 @@ pub unsafe fn enclave_exit(enclave_id: u8) -> Result<(usize, usize), isize> {
     let saved_mstatus  = slot.saved_mstatus;
 
     // Unlock PMP — S-mode can now access the region again.
-    pmp::unlock_region(pmp_slot);
+    unsafe { pmp::unlock_region(pmp_slot); }
 
     slot.state     = EnclaveState::Exited;
     slot.allocated = false;
@@ -332,7 +332,7 @@ pub unsafe fn enclave_exit(enclave_id: u8) -> Result<(usize, usize), isize> {
 /// `report_phys` must point to at least 73 bytes of writable physical memory
 /// accessible to the caller (S-mode validates this before issuing the SBI call).
 pub unsafe fn enclave_attest(enclave_id: u8, report_phys: usize) -> Result<(), isize> {
-    let slot = find_slot(enclave_id).ok_or(SBI_ERR_INVALID_PARAM)?;
+    let slot = unsafe { find_slot(enclave_id) }.ok_or(SBI_ERR_INVALID_PARAM)?;
 
     if !slot.allocated {
         return Err(SBI_ERR_DENIED);
@@ -361,7 +361,7 @@ pub unsafe fn enclave_attest(enclave_id: u8, report_phys: usize) -> Result<(), i
 
     // Write report to the physical address provided by the kernel.
     let report_ptr = report_phys as *mut u8;
-    core::ptr::copy_nonoverlapping(report.as_ptr(), report_ptr, report.len());
+    unsafe { core::ptr::copy_nonoverlapping(report.as_ptr(), report_ptr, report.len()); }
 
     Ok(())
 }
@@ -373,7 +373,7 @@ pub unsafe fn enclave_attest(enclave_id: u8, report_phys: usize) -> Result<(), i
 unsafe fn find_slot(id: u8) -> Option<&'static Enclave> {
     let pool: *const [Enclave; MAX_ENCLAVES] = core::ptr::addr_of!(ENCLAVE_POOL);
     for i in 0..MAX_ENCLAVES {
-        let e = &(*pool)[i];
+        let e = unsafe { &(*pool)[i] };
         if e.allocated && e.id == id {
             return Some(e);
         }
@@ -384,7 +384,7 @@ unsafe fn find_slot(id: u8) -> Option<&'static Enclave> {
 unsafe fn find_slot_mut(id: u8) -> Option<&'static mut Enclave> {
     let pool: *mut [Enclave; MAX_ENCLAVES] = core::ptr::addr_of_mut!(ENCLAVE_POOL);
     for i in 0..MAX_ENCLAVES {
-        let e = &mut (*pool)[i];
+        let e = unsafe { &mut (*pool)[i] };
         if e.allocated && e.id == id {
             return Some(e);
         }

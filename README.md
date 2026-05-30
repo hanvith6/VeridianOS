@@ -9,7 +9,7 @@
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-emerald.svg?style=flat-square)](https://opensource.org/licenses/Apache-2.0)
   [![Target: RISC-V 64](https://img.shields.io/badge/Target-RISC--V%2064-blue.svg?style=flat-square)](https://riscv.org/)
   [![Language: Rust Nightly](https://img.shields.io/badge/Language-Rust%20Nightly-orange.svg?style=flat-square)](https://www.rust-lang.org/)
-  [![Roadmap: Phase 11 Complete](https://img.shields.io/badge/Roadmap-Phase%2011%20Complete-indigo.svg?style=flat-square)](#-project-roadmap)
+  [![Roadmap: Phase 12 In Progress](https://img.shields.io/badge/Roadmap-Phase%2012%20In%20Progress-indigo.svg?style=flat-square)](#-project-roadmap)
 </div>
 
 ---
@@ -52,6 +52,16 @@ VeridianOS establishes cluster coherence across multiple physical nodes or virtu
 * **Remote NES Node Dispatch** uses a 16-slot `DistTicket` pool. `dispatch_node` sends a `GraphNodeDispatch` message and injects a synthetic `GraphNodeResult` on the loopback ring for QEMU single-instance verification. `wait_remote` polls with an `rdtime`-based timeout.
 * **S-Mode Raft Consensus Engine** — a complete Raft state machine (Follower → Candidate → Leader). A single-node cluster wins quorum immediately on boot; `append_entry` commits `SemanticGraphMutation` records to a 128-slot static log and broadcasts `AppendEntries` on the DKCP ring.
 * **Syscalls 90–101** are all fully implemented (no stubs): domain join/list/status, remote NES dispatch/wait/abort, cap export/import/revoke, SGF replicate enable/query, and Raft status.
+
+### 6. <img src="docs/assets/icons/distributed.svg" width="18" height="18" style="vertical-align: middle; margin-right: 6px;" /> Symmetric Multi-Processing (Phase 11.5)
+VeridianOS runs a true multi-hart kernel using the RISC-V SBI Hardware State Management (HSM) extension:
+* **Secondary Hart Bringup:** Harts 1–3 are started via `sbi_hart_start` during early boot. Each hart establishes its own supervisor-mode trap vector and enters an independent scheduling loop; there is no global kernel lock serializing hart execution.
+* **Per-Hart Scheduler:** Each hart dequeues runnable threads from a shared ready queue using atomic compare-and-swap operations, enabling genuine parallel execution on `-smp 4` QEMU targets.
+
+### 7. <img src="docs/assets/icons/shield.svg" width="18" height="18" style="vertical-align: middle; margin-right: 6px;" /> User-Space Exception Delivery (Phase 11.5)
+Processes can survive synchronous faults rather than being unconditionally terminated:
+* **`SYS_REGISTER_EXCEPTION_HANDLER`** — a process registers a handler entry point and stack pointer. On a subsequent page fault, illegal instruction, or misaligned access, the kernel saves the complete trap frame and transfers control to the registered handler in user space.
+* The handler can inspect the fault address and cause, attempt recovery (e.g., lazy-map a page, skip an instruction), and return to the kernel via a resume syscall. This forms the foundation for user-space signal delivery and software exception handling.
 
 ---
 
@@ -126,9 +136,12 @@ To exit the QEMU console, press `Ctrl+A` followed by `X`.
 - [x] **Phase 6: ELF Loader & User Mode Transition** — Parse ELF headers, stack initialization, and Ring 3 execution.
 - [x] **Phase 7: Neural Execution Subsystem** — Heterogeneous queues (CPU, GPU, NPU) and DAG schedulers.
 - [x] **Phase 8: Semantic Graph Filesystem** — Secure graph database replacing hierarchical paths.
-- [x] **Phase 9: Agent Runtime** — Kernel-space AI agents, message passing, and lifecycle syscalls (70-74).
+- [x] **Phase 9: Agent Runtime** — Kernel-space AI agents, message passing, and lifecycle syscalls (70–74).
 - [x] **Phase 10: Self-Improving Kernel Policies** — Latency profiling via cycle counters, $\epsilon$-greedy device router, online EMA stats updates.
-- [x] **Phase 11: Distributed Multi-Kernel Coherence** — Atomic SPSC rings, Distributed Capabilities (DCTP), and S-mode Raft replication.
+- [x] **Phase 11: Distributed Multi-Kernel Coherence** — Atomic SPSC rings, full Distributed Capability Transfer Protocol (DCTP), remote NES dispatch, and S-mode Raft replication. Syscalls 90–101 fully implemented (no stubs).
+- [x] **Phase 11.5: SMP — Secondary Harts** — Harts 1–3 brought online via SBI HSM; each hart runs an independent supervisor-mode scheduler loop.
+- [x] **Phase 11.5: User-Space Exception Delivery** — `SYS_REGISTER_EXCEPTION_HANDLER` syscall; synchronous faults are vectored to a registered user-space handler with the saved trap frame instead of terminating the process.
+- [ ] **Phase 12: M-Mode TEE Monitor** — M-mode Trusted Execution Environment monitor scaffold — **in progress**.
 
 ---
 

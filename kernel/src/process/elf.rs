@@ -136,6 +136,9 @@ pub fn load_elf(elf_data: &[u8], page_table: &mut PageTable) -> Result<usize, &'
                         // Leaf slot exists but is not mapped yet. Allocate and map it.
                         let new_frame = crate::memory::alloc_page()
                             .ok_or("Out of memory during ELF segment loading")?;
+                        unsafe {
+                            core::ptr::write_bytes(new_frame as *mut u8, 0, PAGE_SIZE);
+                        }
                         entry.set(
                             new_frame,
                             segment_flags
@@ -149,6 +152,9 @@ pub fn load_elf(elf_data: &[u8], page_table: &mut PageTable) -> Result<usize, &'
                     // Allocate a new physical frame for this page (leaf table doesn't exist)
                     let new_frame = crate::memory::alloc_page()
                         .ok_or("Out of memory during ELF segment loading")?;
+                    unsafe {
+                        core::ptr::write_bytes(new_frame as *mut u8, 0, PAGE_SIZE);
+                    }
 
                     // Map virtual page to physical frame
                     unsafe {

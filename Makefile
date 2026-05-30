@@ -10,10 +10,6 @@ all: disk
 
 # --- Build Targets ---
 
-# Build the user_program (legacy inline ELF, kept for compatibility)
-build_user_program:
-	cargo build -p user_program --release
-
 # Build the hello user-space process for the disk image
 build_hello:
 	cargo build -p hello --release
@@ -38,24 +34,32 @@ build_policy_test:
 build_smp_test:
 	cargo build -p smp_test --release
 
-# Build the kernel (depends on user_program for include_bytes! path)
-build_kernel: build_user_program
+# Build the enclave_test user-space process for the disk image
+build_enclave_test:
+	cargo build -p enclave_test --release
+
+# Build the M-mode monitor
+build_monitor:
+	cargo build -p veridian-monitor --release
+
+# Build the kernel
+build_kernel:
 	cargo build -p veridian-kernel --release
 
 # Full build: everything including disk image
-build: disk build_kernel
+build: disk build_monitor build_kernel
 
 # --- Disk Image ---
 
 # Create disk.img: a POSIX ustar TAR archive containing all user-space programs.
 # The TAR format is understood by the kernel's InitRAMFS parser.
-disk: build_hello build_neural_test build_semantic_test build_agent_test build_policy_test build_smp_test
+disk: build_hello build_neural_test build_semantic_test build_agent_test build_policy_test build_smp_test build_enclave_test
 	@echo "[DISK] Building disk image: $(DISK_IMG)"
 	@# Remove stale image if it exists
 	@rm -f $(DISK_IMG)
 	@# Create a POSIX ustar TAR containing all user-space ELF binaries
 	@# We use --format=ustar to ensure the kernel parser gets a known format
-	cd target/riscv64gc-unknown-none-elf/release && tar cf ../../../$(DISK_IMG) --format=ustar hello neural_test semantic_test agent_test policy_test smp_test
+	cd target/riscv64gc-unknown-none-elf/release && tar cf ../../../$(DISK_IMG) --format=ustar hello neural_test semantic_test agent_test policy_test smp_test enclave_test
 	@echo "[DISK] Created $(DISK_IMG) (ustar TAR):"
 	@tar tf $(DISK_IMG)
 	@ls -lh $(DISK_IMG)

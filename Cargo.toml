@@ -3,13 +3,13 @@ resolver = "2"
 members = [
     "kernel",
     "monitor",
-    "user_program",
     "user_programs/hello",
     "user_programs/neural_test",
     "user_programs/semantic_test",
     "user_programs/agent_test",
     "user_programs/policy_test",
     "user_programs/smp_test",
+    "user_programs/enclave_test",
 ]
 
 [workspace.package]

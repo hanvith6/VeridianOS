@@ -239,7 +239,7 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
                     println!("[RAMFS] Loaded {} file(s) from disk image.", count);
 
                     // 7c. Parse the 'init' binary name from bootargs, fallback to "policy_test"
-                    let init_binary = parse_bootargs(dtb_ptr).unwrap_or("policy_test");
+                    let init_binary = parse_bootargs(dtb_ptr).unwrap_or("enclave_test");
                     println!("[RAMFS] Looking for init binary: '{}'", init_binary);
                     match fs::RamFs::find(init_binary) {
                         Some(elf_data) => {
@@ -280,6 +280,19 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
             println!("[VIRTIO] No legacy ELF fallback in Phase 11. Run `make disk` to rebuild disk.img.");
         }
     }
+
+    // 7e. Initialize VirtIO network device
+    match virtio::net::init() {
+        Ok(_) => {
+            println!("[VIRTIO] Net device ready.");
+            *crate::dist::transport::ACTIVE_TRANSPORT.lock() = &crate::dist::transport::VirtioNetTransport;
+            println!("[BOOT] DKCP active transport switched to VirtioNetTransport.");
+        }
+        Err(e) => {
+            println!("[VIRTIO] Net device initialization failed: {}", e);
+        }
+    }
+
     println!("=== [PHASE 6 INIT COMPLETE] ===\n");
 
     // -----------------------------------------------------------------------

@@ -24,19 +24,20 @@ _start:
     mv      tp, a0
 
     # ---------------------------------------------------------------
-    # Hart selection: Only hart 0 boots the kernel.
-    # Other harts spin in a WFI loop until woken by IPI.
-    # a0 = hart ID (passed by OpenSBI)
-    # a1 = pointer to device tree blob (DTB)
+    # OpenSBI guarantees only the elected boot hart reaches _start.
+    # The boot hart can have any ID (0-3) — do NOT park based on ID.
+    # Secondary harts are woken later via SBI HSM -> _secondary_start.
     # ---------------------------------------------------------------
-    # In S-mode, OpenSBI passes hart ID in a0
-    bnez    a0, _park_hart          # If not hart 0, park
 
     # ---------------------------------------------------------------
-    # Set up the stack pointer
-    # Stack grows downward; _stack_top is defined in linker.ld
+    # Set up the stack pointer for the boot hart.
+    # Stack grows downward; _stack_top is defined in linker.ld.
+    # Boot hart always uses the top of the stack region.
     # ---------------------------------------------------------------
     la      sp, _stack_top
+
+    # Skip _secondary_start — boot hart goes straight to BSS + kmain.
+    j       _boot_hart_init
 
 .globl _secondary_start
 _secondary_start:
@@ -55,6 +56,7 @@ _secondary_park:
     wfi
     j       _secondary_park
 
+_boot_hart_init:
     # ---------------------------------------------------------------
     # Zero out BSS section
     # BSS contains uninitialized globals that must be zeroed

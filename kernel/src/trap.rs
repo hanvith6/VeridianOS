@@ -105,7 +105,8 @@ pub unsafe extern "C" fn trap_handler(tf: *mut TrapFrame) {
             let id = unsafe { (*tf).regs[17] };
             if id == crate::syscall::numbers::SYS_EXCEPTION_RETURN {
                 let restored = thread::with_current_thread_mut(|t| {
-                    if let Some(saved) = t.saved_user_context.take() {
+                    if let Some(mut saved) = t.saved_user_context.take() {
+                        saved.sepc += 4; // Advance past the faulting instruction
                         unsafe {
                             *tf = saved;
                         }
@@ -147,6 +148,13 @@ pub unsafe extern "C" fn trap_handler(tf: *mut TrapFrame) {
             if from_user && (code == 12 || code == 13 || code == 15) {
                 let handler = crate::process::with_current_process(|proc| proc.exception_handler).unwrap_or(0);
                 if handler != 0 {
+                    crate::println!(
+                        "[KERNEL TRAP] Redirecting page fault to user handler: scause=0x{:X}, stval=0x{:X}, sepc=0x{:X}, handler=0x{:X}",
+                        scause,
+                        stval,
+                        unsafe { (*tf).sepc },
+                        handler
+                    );
                     // Save user context to thread
                     thread::with_current_thread_mut(|t| {
                         t.saved_user_context = Some(unsafe { *tf });

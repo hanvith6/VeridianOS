@@ -38,6 +38,7 @@ VeridianOS requires **Rust Nightly** for the following unstable features:
 - `core::arch::global_asm!` — inline assembly for boot stub and trap vector
 - `#[unsafe(no_mangle)]` — stable ABI for kernel entry point
 - `spin` crate locks — used for kernel-wide mutual exclusion
+- `linked_list_allocator = "0.10.6"` — heap allocator used by the kernel for dynamic allocation
 
 The project ships a `rust-toolchain.toml` that pins the exact channel:
 
@@ -196,14 +197,17 @@ To exit QEMU: press **`Ctrl+A`** then **`X`**.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  M-MODE (Machine)  — OpenSBI Firmware                           │
-│  Handles: hardware init, SBI ecall forwarding, M-mode traps     │
+│  M-MODE (Machine)  — OpenSBI Firmware + TEE Security Monitor    │
+│  Handles: hardware init, SBI ecall forwarding, M-mode traps,    │
+│           PMP-based enclave isolation (Phase 12 monitor/ crate) │
 ├─────────────────────────────────────────────────────────────────┤
-│  S-MODE (Supervisor)  — VeridianOS Microkernel                  │
-│  Handles: paging, capabilities, scheduling, syscalls, IPC       │
+│  S-MODE (Supervisor)  — VeridianOS Microkernel (4 harts, SMP)   │
+│  Handles: paging, capabilities, scheduling, syscalls, IPC,      │
+│           distributed DKCP/Raft, NES, heap (linked_list_alloc)  │
 ├─────────────────────────────────────────────────────────────────┤
 │  U-MODE (User)  — Isolated Processes                            │
-│  Handles: user apps (hello, neural_test), future OS services    │
+│  Handles: user apps (hello, neural_test, smp_test), user-space  │
+│           exception handlers (registered via syscall 110)       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -216,7 +220,10 @@ kmain() in main.rs
 ├── trap::init()                 ← Write stvec CSR → trap_vector
 ├── memory::init()
 │   ├── page_alloc: BuddyAllocator (4KB–4MB blocks, 128MB RAM)
-│   └── page_table: Sv39 3-level page table, satp activated
+│   ├── page_table: Sv39 3-level page table, satp activated
+│   └── heap: linked_list_allocator (dynamic kernel heap)
+│
+├── smp::init()                  ← Wake harts 1–3 via SBI HSM sbi_hart_start
 │
 ├── capability::                 ← Handles, Rights, HandleTable
 │   ├── Handle { object_type, object_ptr, rights }
@@ -226,23 +233,48 @@ kmain() in main.rs
 ├── process::
 │   ├── Process { pid, state, page_table, handle_table }
 │   ├── spawn()  ← ELF loader + U-mode entry
-│   └── thread:: ← Round-robin preemptive scheduler (16 threads)
+│   └── thread:: ← Per-hart round-robin scheduler (current_idx[4])
+│       └── exception delivery: page faults → registered U-mode handler
 │
-├── syscall::                    ← ecall dispatcher
-│   ├── numbers.rs (SYS_WRITE=1, SYS_EXIT=2, ...)
+├── syscall::                    ← ecall dispatcher (syscalls 1–123)
+│   ├── numbers.rs (SYS_WRITE=1 … SYS_ENCLAVE_ATTEST=123)
 │   └── mod.rs    (syscall_handler match table)
 │
 ├── nes::                        ← Neural Execution Subsystem
-│   ├── graph.rs  (TaskGraph, TaskNode, GraphPool[16])
-│   ├── queue.rs  (HeterogeneousQueue ring[128] per device)
-│   ├── validator.rs (DFS cycle detection)
-│   └── simulator.rs (CPU/GPU/NPU worker threads)
+│   ├── graph.rs      (TaskGraph, TaskNode, GraphPool[16])
+│   ├── queue.rs      (HeterogeneousQueue ring[128] per device)
+│   ├── validator.rs  (DFS cycle detection)
+│   ├── simulator.rs  (CPU/GPU/NPU worker threads + EMA policy)
+│   └── nes_dist.rs   (remote node dispatch, TicketPool[16])
 │
-├── virtio::blk                  ← VirtIO block device driver
-│   └── 3-descriptor chain, legacy/modern protocol
+├── dkcp::                       ← Distributed Multi-Kernel Layer
+│   ├── ring.rs   (lock-free SPSC ring, 256 × 64 B)
+│   ├── dctp.rs   (export / import / revoke, 128-bit UIDs)
+│   └── raft.rs   (Leader/Follower/Candidate, AppendEntries, elections)
+│
+├── enclave_bridge.rs            ← S-mode → M-mode SBI bridge (EID 0x08424B45)
+│
+├── virtio::                     ← VirtIO device drivers
+│   ├── blk.rs  (block device, 3-descriptor chain)
+│   └── net.rs  (virtio-net for real inter-VM networking)
 │
 └── fs::ramfs                    ← ustar TAR InitRAMFS parser
 ```
+
+### Syscall Table
+
+| Range | Subsystem | Representative Syscalls |
+|-------|-----------|------------------------|
+| 1–2 | Core I/O & lifecycle | `SYS_WRITE` (1), `SYS_EXIT` (2) |
+| 3 | Scheduler | `SYS_YIELD` (3) |
+| 10–11 | Virtual Memory | `SYS_VMO_CREATE` (10), `SYS_VMO_MAP` (11) |
+| 50–53 | NES graph | `SYS_GRAPH_CREATE` (50) … `SYS_GRAPH_WAIT` (53) |
+| 60–63 | Semantic graph FS | `SYS_NODE_CREATE` (60) … `SYS_GRAPH_QUERY` (63) |
+| 70–74 | Agent runtime | `SYS_AGENT_SPAWN` (70) … `SYS_AGENT_STATUS` (74) |
+| 80 | Policy engine | `SYS_POLICY_CONFIGURE` (80) |
+| 90–101 | Distributed DKCP / Raft / NES-dist | `SYS_DCAP_EXPORT` (90) … `SYS_DKCP_DISCONNECT` (101) |
+| 110–111 | User-space exception delivery | `SYS_REGISTER_EXCEPTION_HANDLER` (110), `SYS_EXCEPTION_RETURN` (111) |
+| 120–123 | M-mode TEE enclaves | `SYS_ENCLAVE_CREATE` (120) … `SYS_ENCLAVE_ATTEST` (123) |
 
 ### Key Design Principles
 
@@ -285,11 +317,20 @@ sret → resume U-mode
 
 ```
 VeridianOS/
-├── Cargo.toml              ← Workspace: [kernel, hello, neural_test, user_program]
+├── Cargo.toml              ← Workspace: [kernel, monitor, hello, neural_test, user_program, smp_test]
 ├── Makefile                ← Build targets (build/run/disk/debug/clean)
 ├── rust-toolchain.toml     ← Pins nightly + riscv64gc-unknown-none-elf
 ├── disk.img                ← Generated ustar TAR (rebuilt by `make disk`)
 ├── plan.md                 ← Master development plan (17 sections)
+│
+├── monitor/                ← M-mode TEE Security Monitor (Phase 12)
+│   ├── Cargo.toml          ← Separate crate; compiles to a distinct M-mode binary
+│   └── src/
+│       ├── lib.rs          ← M-mode entry point
+│       ├── pmp.rs          ← PMP-based enclave isolation (16 entries)
+│       ├── enclave.rs      ← EnclaveRecord pool + lifecycle state machine
+│       ├── attest.rs       ← SHA-256 + HMAC-SHA-256 attestation (no_std, hand-rolled)
+│       └── sbi_ext.rs      ← SBI extension EID 0x08424B45: enclave_create/enter/exit/attest
 │
 ├── kernel/src/
 │   ├── main.rs             ← kmain() — boot sequence orchestrator
@@ -338,8 +379,9 @@ VeridianOS/
 │       └── ramfs.rs        ← ustar TAR parser, static RAM buffer
 │
 ├── user_programs/
-│   ├── hello/src/main.rs   ← Simple U-mode hello world
-│   └── neural_test/src/main.rs ← NES DAG integration test
+│   ├── hello/src/main.rs          ← Simple U-mode hello world
+│   ├── neural_test/src/main.rs    ← NES DAG integration test
+│   └── smp_test/src/main.rs       ← SMP verification: confirms all four harts schedule concurrently
 │
 └── docs/
     ├── ONBOARDING.md       ← This file
@@ -378,7 +420,8 @@ pub const SYS_DEBUG_DUMP: usize = 10;
 
 > [!IMPORTANT]
 > Syscall numbers must be **unique and stable**. Never reuse a number for a different syscall.
-> Reserve numbers 5–49 for future basic syscalls; 50–99 for NES; 100+ for future subsystems.
+> Allocation guide: 5–49 basic syscalls; 50–89 NES; 90–101 distributed DKCP/Raft;
+> 110–111 user-space exception delivery; 120–123 M-mode TEE enclaves; 130+ reserved for future subsystems.
 
 ### Step 2 — Implement the Handler Function
 
@@ -570,16 +613,20 @@ mod tests {
 The boot sequence in `kmain()` must follow this dependency order:
 
 ```
-1. uart::init()          ← Must be first (needed for println!)
-2. trap::init()          ← Must be before interrupts are enabled
-3. memory::init()        ← Must be before any dynamic allocation
-4. capability system     ← Depends on memory
-5. process/thread        ← Depends on memory + capability
-6. nes::init()           ← Depends on memory + capability
-7. virtio::blk::init()   ← Depends on memory (DMA buffers)
-8. fs::RamFs::load()     ← Depends on virtio
-9. process::spawn()      ← Depends on fs + memory + capability
-10. thread::schedule()   ← Must be last (yields control to threads)
+1.  uart::init()             ← Must be first (needed for println!)
+2.  trap::init()             ← Must be before interrupts are enabled
+3.  memory::init()           ← Must be before any dynamic allocation (buddy + heap)
+4.  smp::init()              ← Wake secondary harts 1–3 via SBI HSM
+5.  capability system        ← Depends on memory
+6.  process/thread           ← Depends on memory + capability; per-hart scheduler
+7.  nes::init()              ← Depends on memory + capability
+8.  dkcp::init()             ← Depends on memory; starts Raft state machine
+9.  enclave_bridge::init()   ← Registers SBI extension EID with M-mode monitor
+10. virtio::blk::init()      ← Depends on memory (DMA buffers)
+11. virtio::net::init()      ← Depends on memory; optional for multi-VM networking
+12. fs::RamFs::load()        ← Depends on virtio::blk
+13. process::spawn()         ← Depends on fs + memory + capability
+14. thread::schedule()       ← Must be last (yields control to threads on all harts)
 ```
 
 ---
@@ -655,6 +702,7 @@ All kernel `println!` output goes to the UART (serial port). In QEMU with `-nogr
 ```bash
 qemu-system-riscv64 \
     -machine virt -nographic \
+    -smp 4 \
     -bios default \
     -drive id=hd0,file=disk.img,format=raw,if=none \
     -device virtio-blk-device,drive=hd0 \
