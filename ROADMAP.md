@@ -21,7 +21,7 @@ This document outlines the design and implementation phases of **VeridianOS**, a
 | **Phase 11**| Distributed Coherence | [x] | Atomic SPSC ring buffers, Distributed Capabilities (DCTP), and full Raft consensus replication. Syscalls 90–101 fully implemented (no stubs). |
 | **Phase 11.5**| SMP — Secondary Harts | [x] | Secondary harts 1–3 brought online via SBI HSM (`hart_start`); each hart runs its own scheduler loop. |
 | **Phase 11.5**| User-Space Exception Delivery | [x] | `SYS_REGISTER_EXCEPTION_HANDLER` syscall; synchronous fault vectoring to registered user-space handler with saved trap frame. |
-| **Phase 12**| M-Mode TEE Monitor | [ ] | M-mode Trusted Execution Environment monitor scaffold — **in progress**. |
+| **Phase 12**| M-Mode TEE Monitor | [x] | Separate M-mode binary (`monitor/` crate) with PMP-based enclave isolation, SHA-256 measurement, HMAC-SHA-256 attestation, and SBI extension EID `0x08424B45`. Syscalls 120–123 (`SYS_ENCLAVE_CREATE/ENTER/EXIT/ATTEST`) fully implemented. `enclave_test` verifies full lifecycle + remote attestation on QEMU. |
 
 ---
 

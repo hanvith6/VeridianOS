@@ -9,6 +9,7 @@ members = [
     "user_programs/agent_test",
     "user_programs/policy_test",
     "user_programs/smp_test",
+    "user_programs/enclave_test",
 ]
 
 [workspace.package]

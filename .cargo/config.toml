@@ -6,7 +6,7 @@ runner = """qemu-system-riscv64 \
     -machine virt \
     -nographic \
     -serial mon:stdio \
-    -bios default \
+    -bios target/riscv64gc-unknown-none-elf/release/veridian-monitor \
     -smp 4 \
     -device virtio-net-device \
     -netdev user,id=net0 \

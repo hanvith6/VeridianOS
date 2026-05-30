@@ -223,7 +223,7 @@ pub fn spawn(name: &str, elf_data: &'static [u8]) -> Result<usize, &'static str>
     let pid = NEXT_PID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let mut process = Process::new(pid);
 
-    if name == "neural_test" || name == "policy_test" {
+    if name == "neural_test" || name == "policy_test" || name == "enclave_test" {
         // Insert DeviceQueue capability at handle 4
         let queue_handle = crate::capability::Handle::new(
             crate::capability::ObjectType::DeviceQueue,

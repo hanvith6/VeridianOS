@@ -446,33 +446,34 @@ Symmetric multi-processing across all four RISC-V harts and a user-space excepti
 
 ## Phase 12: M-Mode TEE Security Monitor
 
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 
-### What Is Being Built
-A separate M-mode security monitor crate (`monitor/`) that implements a Trusted Execution Environment using RISC-V Physical Memory Protection. Enclaves run in isolated PMP regions; the S-mode kernel interacts with the monitor exclusively via a custom SBI extension.
+### What Was Built
+A separate M-mode security monitor binary (`veridian-monitor`) that configures RISC-V Physical Memory Protection (PMP) to enforce hardware-isolated Trusted Execution Environments (TEE) for enclaves. The monitor acts as the early firmware, replaces/bypasses OpenSBI by implementing direct HSM (Hart State Management) and sPI (Send IPI) routing, and intercepts enclave lifecycle ecalls (EID `0x08424B45`). It performs cryptographic measurement (SHA-256) and produces remotely verifiable attestation reports signed with a device key (truncated HMAC-SHA-256).
 
-### Key Files In Progress
+### Key Files Created/Modified
 | File | Purpose |
 |------|---------|
-| `monitor/src/lib.rs` | M-mode crate root — runs before OpenSBI hands off to S-mode |
-| `monitor/src/pmp.rs` | PMP configuration — 16 entries, one per enclave region |
-| `monitor/src/enclave.rs` | `EnclaveRecord` pool, lifecycle state machine (Created / Running / Exited) |
-| `monitor/src/attest.rs` | SHA-256 measurement + HMAC-SHA-256 attestation (hand-rolled, `no_std`, no external crypto crate) |
-| `monitor/src/sbi_ext.rs` | SBI extension EID `0x08424B45`: `enclave_create` / `enter` / `exit` / `attest` |
-| `kernel/src/enclave_bridge.rs` | S-mode shim — translates kernel syscalls 120–123 into SBI ecalls to the monitor |
-| `kernel/src/agent/mod.rs` | `AgentRecord` extended with `enclave_id: Option<u32>` field |
+| `monitor/src/main.rs` | M-mode entry point, HSM parking/booting loop, trap vector, and MSI software interrupt routing |
+| `monitor/src/pmp.rs` | PMP configuration helper — locks/grants NAPOT naturally aligned power-of-two memory regions |
+| `monitor/src/enclave.rs` | Enclave pool management and lifecycle state machine (Empty / Created / Running / Exited) |
+| `monitor/src/attest.rs` | FIPS 180-4 compliant `no_std` SHA-256 and HMAC-SHA-256 signing engine |
+| `monitor/src/sbi_handler.rs` | SBI extension dispatcher (EID `0x08424B45`, `0x48534D` HSM, and `0x735049` sPI) |
+| `kernel/src/enclave/mod.rs` | Enclave syscall handlers (120–123), walking the process page table to translate report buffers to PA |
 | `kernel/src/syscall/numbers.rs` | Syscalls 120–123 |
+| `user_programs/enclave_test/` | Verification program — spawns, enters, exits, and attests enclaves in U-mode |
 
 ### Key Syscalls Added
 | ID | Name | Description |
 |----|------|-------------|
-| `120` | `SYS_ENCLAVE_CREATE` | Request the M-mode monitor to allocate a PMP-isolated enclave region |
-| `121` | `SYS_ENCLAVE_ENTER` | Transfer execution into an enclave (monitor sets PMP, switches to enclave stack) |
-| `122` | `SYS_ENCLAVE_EXIT` | Exit the enclave and return to S-mode; monitor clears PMP entry |
-| `123` | `SYS_ENCLAVE_ATTEST` | Request a SHA-256 + HMAC-SHA-256 attestation report for an enclave |
+| `120` | `SYS_ENCLAVE_CREATE` | Request the monitor to allocate and measure a PMP-isolated enclave region |
+| `121` | `SYS_ENCLAVE_ENTER` | Enter the enclave: seals PMP S-mode access, drops CPU to U-mode at entry point |
+| `122` | `SYS_ENCLAVE_EXIT` | Exits the enclave back to S-mode: restores kernel mepc and unlocks PMP region |
+| `123` | `SYS_ENCLAVE_ATTEST` | Walk current page table to get PA, request monitor to write a 73-byte attestation report |
 
-### Design Notes
-- The `monitor/` crate compiles as a separate binary linked at a distinct physical address below the S-mode kernel.
-- PMP entries are configured at M-mode so the S-mode kernel itself cannot read enclave memory.
-- Attestation uses a hand-rolled `no_std` SHA-256 and HMAC-SHA-256 to avoid pulling in external crypto crates.
-- `AgentRecord.enclave_id` allows the agent runtime to associate an agent with its hardware-isolated computation context.
+### What Was Proven Working
+- Multi-hart booting under the custom M-mode monitor using the new SBI HSM and sPI routing.
+- The critical `mepc` overwrite bug resolved by skipping `mepc += 4` on successful enclave enter/exit.
+- Page table walk in `SYS_ENCLAVE_ATTEST` correctly translating user virtual address buffers to physical memory.
+- `enclave_test` successfully compiles, creates an enclave, triggers enter/exit, and validates the HMAC-SHA-256 attestation signature.
+

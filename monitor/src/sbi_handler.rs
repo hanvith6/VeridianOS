@@ -77,9 +77,64 @@ pub fn dispatch(eid: usize, fid: usize, a0: usize, a1: usize, a2: usize) -> SbiR
         SBI_EID_TIMER => handle_timer(fid, a0),
         SBI_EID_LEGACY_PUTCHAR => handle_putchar(a0),
 
+        // HSM extension (Hart State Management)
+        0x48534D => handle_hsm(fid, a0, a1, a2),
+        // sPI extension (Send IPI)
+        0x735049 => handle_ipi(fid, a0, a1),
+
         // Probe: any unknown EID returns SBI_ERR_NOT_SUPPORTED.
         _ => SbiRet::err(enclave::SBI_ERR_NOT_SUPPORTED),
     }
+}
+
+fn handle_hsm(fid: usize, a0: usize, a1: usize, a2: usize) -> SbiRet {
+    if fid != 0 {
+        return SbiRet::err(enclave::SBI_ERR_NOT_SUPPORTED);
+    }
+    let hartid = a0;
+    let start_addr = a1;
+    let opaque = a2;
+
+    if hartid >= 4 {
+        return SbiRet::err(enclave::SBI_ERR_INVALID_PARAM);
+    }
+
+    unsafe {
+        let state = core::ptr::read_volatile(core::ptr::addr_of!(crate::HART_STATES[hartid].state));
+        if state != 0 {
+            return SbiRet::err(enclave::SBI_ERR_ALREADY_AVAILABLE);
+        }
+        
+        crate::HART_STATES[hartid].start_addr = start_addr;
+        crate::HART_STATES[hartid].opaque = opaque;
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(crate::HART_STATES[hartid].state), 1);
+        
+        // Trigger MSIP on target hart to wake it from WFI
+        let msip = (0x0200_0000 + 4 * hartid) as *mut u32;
+        core::ptr::write_volatile(msip, 1);
+    }
+
+    SbiRet::ok(0)
+}
+
+fn handle_ipi(fid: usize, a0: usize, a1: usize) -> SbiRet {
+    if fid != 0 {
+        return SbiRet::err(enclave::SBI_ERR_NOT_SUPPORTED);
+    }
+    let hart_mask = a0;
+    let hart_mask_base = a1;
+
+    for i in 0..4 {
+        let target_hart = hart_mask_base + i;
+        if target_hart < 4 && (hart_mask & (1 << i)) != 0 {
+            unsafe {
+                let msip = (0x0200_0000 + 4 * target_hart) as *mut u32;
+                core::ptr::write_volatile(msip, 1);
+            }
+        }
+    }
+
+    SbiRet::ok(0)
 }
 
 // -----------------------------------------------------------------------
@@ -149,8 +204,9 @@ fn handle_enclave_enter(enclave_id: usize) -> SbiRet {
     // enclave_enter writes the new mepc (entry_pa) and mstatus (U-mode) CSRs.
     // The trap handler's `mret` at the end of the ecall path will then jump to
     // the enclave entry point in U-mode.
+    // We save kernel_mepc + 4 so we return to the instruction after the ecall.
     match unsafe {
-        enclave::enclave_enter(enclave_id as u8, kernel_mepc, kernel_mstatus)
+        enclave::enclave_enter(enclave_id as u8, kernel_mepc.wrapping_add(4), kernel_mstatus)
     } {
         Ok(()) => SbiRet::ok(0),
         Err(code) => SbiRet::err(code),

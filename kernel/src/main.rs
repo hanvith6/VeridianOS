@@ -239,7 +239,7 @@ pub extern "C" fn kmain(hart_id: usize, dtb_ptr: usize) -> ! {
                     println!("[RAMFS] Loaded {} file(s) from disk image.", count);
 
                     // 7c. Parse the 'init' binary name from bootargs, fallback to "policy_test"
-                    let init_binary = parse_bootargs(dtb_ptr).unwrap_or("policy_test");
+                    let init_binary = parse_bootargs(dtb_ptr).unwrap_or("enclave_test");
                     println!("[RAMFS] Looking for init binary: '{}'", init_binary);
                     match fs::RamFs::find(init_binary) {
                         Some(elf_data) => {

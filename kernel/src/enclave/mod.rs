@@ -241,11 +241,15 @@ pub fn sys_enclave_attest(enclave_id: usize, report_buf_ptr: usize) -> isize {
     }
 
     // Convert the user virtual address to physical for the monitor.
-    // The monitor writes the report directly to physical memory.
-    // For now we pass the virtual address — in a full implementation this
-    // should be translated via the current process's page table.
-    // TODO(phase12): translate report_buf_ptr through proc.page_table to PA.
-    let report_phys = report_buf_ptr; // Stub: assume identity map for now
+    let report_phys = crate::process::with_current_process(|proc| {
+        proc.page_table.get_entry_mut(report_buf_ptr)
+            .filter(|entry| entry.is_valid())
+            .map(|entry| entry.physical_address() + (report_buf_ptr % crate::memory::PAGE_SIZE))
+    }).flatten().unwrap_or(0);
+
+    if report_phys == 0 {
+        return -14; // -EFAULT
+    }
 
     let ret = sbi_enclave_call(FID_ENCLAVE_ATTEST, enclave_id, report_phys, 0);
 
