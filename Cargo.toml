@@ -10,6 +10,8 @@ members = [
     "user_programs/policy_test",
     "user_programs/smp_test",
     "user_programs/enclave_test",
+    "user_programs/rights_test",
+    "user_programs/syscall_robustness_test",
 ]
 
 [workspace.package]

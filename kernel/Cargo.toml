@@ -6,6 +6,13 @@ authors.workspace = true
 license.workspace = true
 description = "The VeridianOS microkernel — AI-native, capability-based, written in Rust"
 
+# Library target enables `cargo test --lib` for host-side unit tests of
+# pure-logic modules (page_alloc, etc.) without requiring RISC-V hardware.
+# The kernel binary continues to use main.rs as its crate root.
+[lib]
+name = "veridian_kernel"
+path = "src/lib.rs"
+
 [dependencies]
 spin = "0.9"
 bitflags = "2"

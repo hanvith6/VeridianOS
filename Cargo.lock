@@ -47,6 +47,10 @@ name = "policy_test"
 version = "0.1.0"
 
 [[package]]
+name = "rights_test"
+version = "0.12.1"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -77,6 +81,10 @@ checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
 dependencies = [
  "lock_api",
 ]
+
+[[package]]
+name = "syscall_robustness_test"
+version = "0.12.1"
 
 [[package]]
 name = "veridian-kernel"
